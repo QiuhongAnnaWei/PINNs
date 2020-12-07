@@ -44,7 +44,8 @@ import matplotlib.pyplot as plt
 # I make my own newfig and savefig functions
 def newfig(width, nplots = 1):
     fig = plt.figure(figsize=figsize(width, nplots))
-    ax = fig.add_subplot(111)
+    ax = fig.add_subplot(111) # add an Axes to the figure as part of a subplot arrangement
+    # 3-digit integer: nrows, ncols, index (starts at 1 in the upper left and increases to the right/[1, numrows*numcols])
     return fig, ax
 
 def savefig(filename, crop = True):

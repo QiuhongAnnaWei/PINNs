@@ -21,18 +21,20 @@ import matplotlib.gridspec as gridspec
 np.random.seed(1234)
 tf.set_random_seed(1234)
 
+# tensor: more high-level, representative of actual entity, independent of coordinate space
+# mathematically: analogous to/more general than a vector. An array of functions of the coordinates of a space
+# tensorflow: like a class for ease of organization
+
 class PhysicsInformedNN:
     # Initialize the class
     def __init__(self, x, y, t, u, v, layers):
-        
-        X = np.concatenate([x, y, t], 1)
-        
-        self.lb = X.min(0)
+        X = np.concatenate([x, y, t], 1) # [x, y, t]
+        # NOTE: embedded boundary information in data
+        self.lb = X.min(0) # minimum along columns [x, y, t] -> 1d
         self.ub = X.max(0)
                 
-        self.X = X
-        
-        self.x = X[:,0:1]
+        self.X = X # lines below can be simplified
+        self.x = X[:,0:1] # N_train x 1
         self.y = X[:,1:2]
         self.t = X[:,2:3]
         
@@ -45,7 +47,7 @@ class PhysicsInformedNN:
         self.weights, self.biases = self.initialize_NN(layers)        
         
         # Initialize parameters
-        self.lambda_1 = tf.Variable([0.0], dtype=tf.float32)
+        self.lambda_1 = tf.Variable([0.0], dtype=tf.float32) # NOTE: difference from forward
         self.lambda_2 = tf.Variable([0.0], dtype=tf.float32)
         
         # tf placeholders and graph
@@ -61,11 +63,13 @@ class PhysicsInformedNN:
         
         self.u_pred, self.v_pred, self.p_pred, self.f_u_pred, self.f_v_pred = self.net_NS(self.x_tf, self.y_tf, self.t_tf)
         
+        # Loss: observed data (x component) + observed data (y component) + PDE
         self.loss = tf.reduce_sum(tf.square(self.u_tf - self.u_pred)) + \
                     tf.reduce_sum(tf.square(self.v_tf - self.v_pred)) + \
                     tf.reduce_sum(tf.square(self.f_u_pred)) + \
                     tf.reduce_sum(tf.square(self.f_v_pred))
-                    
+            # tf.reduce_sum: computes the sum of elements across dimensions of a tensor
+            # NOTE: reduce_mean preferred because it is more resistent to the influence of the number of data  
         self.optimizer = tf.contrib.opt.ScipyOptimizerInterface(self.loss, 
                                                                 method = 'L-BFGS-B', 
                                                                 options = {'maxiter': 50000,
@@ -75,7 +79,7 @@ class PhysicsInformedNN:
                                                                            'ftol' : 1.0 * np.finfo(float).eps})        
         
         self.optimizer_Adam = tf.train.AdamOptimizer()
-        self.train_op_Adam = self.optimizer_Adam.minimize(self.loss)                    
+        self.train_op_Adam = self.optimizer_Adam.minimize(self.loss) # updates lambda                 
         
         init = tf.global_variables_initializer()
         self.sess.run(init)
@@ -99,7 +103,6 @@ class PhysicsInformedNN:
     
     def neural_net(self, X, weights, biases):
         num_layers = len(weights) + 1
-        
         H = 2.0*(X - self.lb)/(self.ub - self.lb) - 1.0
         for l in range(0,num_layers-2):
             W = weights[l]
@@ -108,7 +111,7 @@ class PhysicsInformedNN:
         W = weights[-1]
         b = biases[-1]
         Y = tf.add(tf.matmul(H, W), b)
-        return Y
+        return Y # 2 columns: [psi, p] (last value in layers = 2)
         
     def net_NS(self, x, y, t):
         lambda_1 = self.lambda_1
@@ -117,9 +120,9 @@ class PhysicsInformedNN:
         psi_and_p = self.neural_net(tf.concat([x,y,t], 1), self.weights, self.biases)
         psi = psi_and_p[:,0:1]
         p = psi_and_p[:,1:2]
-        
         u = tf.gradients(psi, y)[0]
-        v = -tf.gradients(psi, x)[0]  
+        v = -tf.gradients(psi, x)[0]
+        # NOTE: can also directly output u, v, p -> change layers
         
         u_t = tf.gradients(u, t)[0]
         u_x = tf.gradients(u, x)[0]
@@ -136,15 +139,17 @@ class PhysicsInformedNN:
         p_x = tf.gradients(p, x)[0]
         p_y = tf.gradients(p, y)[0]
 
-        f_u = u_t + lambda_1*(u*u_x + v*u_y) + p_x - lambda_2*(u_xx + u_yy) 
-        f_v = v_t + lambda_1*(u*v_x + v*v_y) + p_y - lambda_2*(v_xx + v_yy)
+        # NOTE: don't always know the form -> can write all the terms and some lambda may be close to 0
+        # Standard application of this framework: know the form
+        f_u = u_t + lambda_1*(u*u_x + v*u_y) + p_x - lambda_2*(u_xx + u_yy) # f in paper
+        f_v = v_t + lambda_1*(u*v_x + v*v_y) + p_y - lambda_2*(v_xx + v_yy) # g in paper
         
         return u, v, p, f_u, f_v
     
     def callback(self, loss, lambda_1, lambda_2):
         print('Loss: %.3e, l1: %.3f, l2: %.5f' % (loss, lambda_1, lambda_2))
       
-    def train(self, nIter): 
+    def train(self, nIter):  # 250 k 
 
         tf_dict = {self.x_tf: self.x, self.y_tf: self.y, self.t_tf: self.t,
                    self.u_tf: self.u, self.v_tf: self.v}
@@ -157,7 +162,7 @@ class PhysicsInformedNN:
             if it % 10 == 0:
                 elapsed = time.time() - start_time
                 loss_value = self.sess.run(self.loss, tf_dict)
-                lambda_1_value = self.sess.run(self.lambda_1)
+                lambda_1_value = self.sess.run(self.lambda_1) # tf variables (not determined by others, don't need feed dictionary)
                 lambda_2_value = self.sess.run(self.lambda_2)
                 print('It: %d, Loss: %.3e, l1: %.3f, l2: %.5f, Time: %.2f' % 
                       (it, loss_value, lambda_1_value, lambda_2_value, elapsed))
@@ -166,16 +171,15 @@ class PhysicsInformedNN:
         self.optimizer.minimize(self.sess,
                                 feed_dict = tf_dict,
                                 fetches = [self.loss, self.lambda_1, self.lambda_2],
-                                loss_callback = self.callback)
+                                loss_callback = self.callback) # 'maxiter': 50000
             
     
     def predict(self, x_star, y_star, t_star):
         
-        tf_dict = {self.x_tf: x_star, self.y_tf: y_star, self.t_tf: t_star}
-        
-        u_star = self.sess.run(self.u_pred, tf_dict)
-        v_star = self.sess.run(self.v_pred, tf_dict)
-        p_star = self.sess.run(self.p_pred, tf_dict)
+        tf_dict = {self.x_tf: x_star, self.y_tf: y_star, self.t_tf: t_star} # no need for u and v
+        # u, f = self.sess.run([self.uf_pred, self.f_pred], tf_dict)
+        # self.u_pred, self.v_pred, self.p_pred, self.f_u_pred, self.f_v_pred = self.net_NS(self.x_tf, self.y_tf, self.t_tf)
+        u_star, v_star, p_star = self.sess.run([self.u_pred, self.v_pred, self.p_pred], tf_dict)
         
         return u_star, v_star, p_star
 
@@ -193,8 +197,7 @@ def plot_solution(X_star, u_star, index):
     plt.figure(index)
     plt.pcolor(X,Y,U_star, cmap = 'jet')
     plt.colorbar()
-    
-    
+       
 def axisEqual3D(ax):
     extents = np.array([getattr(ax, 'get_{}lim'.format(dim))() for dim in 'xyz'])
     sz = extents[:,1] - extents[:,0]
@@ -206,18 +209,26 @@ def axisEqual3D(ax):
         
         
 if __name__ == "__main__": 
-      
+    ## "ability of physics-informed neural networks to identify the entire pressure field, despite the fact that no data on the pressure is used during training"
+    ## "Correct partial differential equation along with the identified one obtained by learning λ1, λ2 and p(t, x, y)""
+        ## primmary task: lambda
+        ## secondary task: recover entire field (p here in particular) from observed data
+    ## For a problem to be complete and to be able to determine unique lambda: need boundary condition
+        ## analytical given -> still feed into PINN just like data
+        ## scattered in data (use them for boundary + interior for lambda)
+    ## Initial and boundary data (often derivative) can be part of observed data; typically more interested in interior
+        ## not helpful if u(t, x) at boundary provides no new information
+        ## if u(t, x) is partial derivative: helpful
     N_train = 5000
     
     layers = [3, 20, 20, 20, 20, 20, 20, 20, 20, 2]
-    
+    # 3: (t, x, y) | 2: (psi, p)
     # Load Data
     data = scipy.io.loadmat('../Data/cylinder_nektar_wake.mat')
-           
-    U_star = data['U_star'] # N x 2 x T
+    U_star = data['U_star'] # N x 2 x T (U and V)
     P_star = data['p_star'] # N x T
     t_star = data['t'] # T x 1
-    X_star = data['X_star'] # N x 2
+    X_star = data['X_star'] # N x 2 (X and Y)
     
     N = X_star.shape[0]
     T = t_star.shape[0]
@@ -237,14 +248,14 @@ if __name__ == "__main__":
     
     u = UU.flatten()[:,None] # NT x 1
     v = VV.flatten()[:,None] # NT x 1
-    p = PP.flatten()[:,None] # NT x 1
+    p = PP.flatten()[:,None] # NT x 1  # not used: P_star used
     
     ######################################################################
-    ######################## Noiseles Data ###############################
+    ######################## Noiseless Data ##############################
     ######################################################################
     # Training Data    
     idx = np.random.choice(N*T, N_train, replace=False)
-    x_train = x[idx,:]
+    x_train = x[idx,:] # N_train x 1 (2d)
     y_train = y[idx,:]
     t_train = t[idx,:]
     u_train = u[idx,:]
@@ -255,17 +266,19 @@ if __name__ == "__main__":
     model.train(200000)
     
     # Test Data
+    # NOTE: (x, y, z)-typically want errors for the entire space
+    # NOTE: (x, y, t)-typically want to see how errors change with time
     snap = np.array([100])
-    x_star = X_star[:,0:1]
-    y_star = X_star[:,1:2]
-    t_star = TT[:,snap]
+    x_star = X_star[:,0:1] # N x 2 -> N X 1
+    y_star = X_star[:,1:2] # N x 2 -> N X 1
+    t_star = TT[:,snap] # N x T -> N x 1 # t = 100
     
-    u_star = U_star[:,0,snap]
-    v_star = U_star[:,1,snap]
-    p_star = P_star[:,snap]
+    u_star = U_star[:,0,snap] # N x 2 x T -> N X 1 # t = 100
+    v_star = U_star[:,1,snap] # N x 2 x T -> N X 1 # t = 100
+    p_star = P_star[:,snap] # N x T -> N x 1 # t = 100
     
     # Prediction
-    u_pred, v_pred, p_pred = model.predict(x_star, y_star, t_star)
+    u_pred, v_pred, p_pred = model.predict(x_star, y_star, t_star) # p_pred for error/plot (N x 1)
     lambda_1_value = model.sess.run(model.lambda_1)
     lambda_2_value = model.sess.run(model.lambda_2)
     
@@ -273,14 +286,14 @@ if __name__ == "__main__":
     error_u = np.linalg.norm(u_star-u_pred,2)/np.linalg.norm(u_star,2)
     error_v = np.linalg.norm(v_star-v_pred,2)/np.linalg.norm(v_star,2)
     error_p = np.linalg.norm(p_star-p_pred,2)/np.linalg.norm(p_star,2)
-
+    # Ground truth: l1 = 1.0, l2=0.01
     error_lambda_1 = np.abs(lambda_1_value - 1.0)*100
     error_lambda_2 = np.abs(lambda_2_value - 0.01)/0.01 * 100
     
     print('Error u: %e' % (error_u))    
     print('Error v: %e' % (error_v))    
     print('Error p: %e' % (error_p))    
-    print('Error l1: %.5f%%' % (error_lambda_1))                             
+    print('Error l1: %.5f%%' % (error_lambda_1))                     
     print('Error l2: %.5f%%' % (error_lambda_2))                  
     
     # Plot Results
@@ -298,18 +311,19 @@ if __name__ == "__main__":
     y = np.linspace(lb[1], ub[1], nn)
     X, Y = np.meshgrid(x,y)
     
+    # X_star (N x 2): coordinates (x, y). 2nd entry: values(u, v, p), (X, Y): points at which to interpolate data
     UU_star = griddata(X_star, u_pred.flatten(), (X, Y), method='cubic')
     VV_star = griddata(X_star, v_pred.flatten(), (X, Y), method='cubic')
     PP_star = griddata(X_star, p_pred.flatten(), (X, Y), method='cubic')
-    P_exact = griddata(X_star, p_star.flatten(), (X, Y), method='cubic')
+    P_exact = griddata(X_star, p_star.flatten(), (X, Y), method='cubic') # t = snap (100)
     
     
     ######################################################################
     ########################### Noisy Data ###############################
     ######################################################################
-    noise = 0.01        
-    u_train = u_train + noise*np.std(u_train)*np.random.randn(u_train.shape[0], u_train.shape[1])
-    v_train = v_train + noise*np.std(v_train)*np.random.randn(v_train.shape[0], v_train.shape[1])    
+    noise = 0.01  # (to assume some error in observation data/reflect actual situation) 
+    u_train = u_train + noise*np.std(u_train)*np.random.randn(u_train.shape[0], u_train.shape[1]) # samples of specified size from standard normal
+    v_train = v_train + noise*np.std(v_train)*np.random.randn(v_train.shape[0], v_train.shape[1]) 
 
     # Training
     model = PhysicsInformedNN(x_train, y_train, t_train, u_train, v_train, layers)
@@ -448,7 +462,7 @@ if __name__ == "__main__":
     ax = plt.subplot(gs2[:, 1])
     h = ax.imshow(P_exact, interpolation='nearest', cmap='rainbow', 
                   extent=[x_star.min(), x_star.max(), y_star.min(), y_star.max()], 
-                  origin='lower', aspect='auto')
+                  origin='lower', aspect='auto') # right now: 
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.05)
 
