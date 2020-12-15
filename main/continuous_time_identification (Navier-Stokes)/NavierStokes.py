@@ -1,6 +1,7 @@
 """
 @author: Maziar Raissi
 """
+# Inverse: given observed data of u(t, x) -> model/pde parameters λ
 
 import sys
 sys.path.insert(0, '../../Utilities/')
@@ -29,7 +30,8 @@ class PhysicsInformedNN:
     # Initialize the class
     def __init__(self, x, y, t, u, v, layers):
         X = np.concatenate([x, y, t], 1) # [x, y, t]
-        # NOTE: embedded boundary information in data
+        # NOTE: commonly embed boundary information in data (include points on boundary)
+        ## typically would know boundary domain
         self.lb = X.min(0) # minimum along columns [x, y, t] -> 1d
         self.ub = X.max(0)
                 
@@ -209,10 +211,12 @@ def axisEqual3D(ax):
         
         
 if __name__ == "__main__": 
-    ## "ability of physics-informed neural networks to identify the entire pressure field, despite the fact that no data on the pressure is used during training"
-    ## "Correct partial differential equation along with the identified one obtained by learning λ1, λ2 and p(t, x, y)""
-        ## primmary task: lambda
+    ## "ability of PINNS to identify the entire pressure field, despite the fact that no data on the pressure is used during training"
+    ## "identified PDE obtained by learning λ1, λ2 and p(t, x, y)""
+        ## primmary task: lambda (PDE)
         ## secondary task: recover entire field (p here in particular) from observed data
+    # (t, x, y) -> [] -> (Psi (u, v), p) -> [] -> (f, g)
+    #       recovering p                  lambda
     ## For a problem to be complete and to be able to determine unique lambda: need boundary condition
         ## analytical given -> still feed into PINN just like data
         ## scattered in data (use them for boundary + interior for lambda)

@@ -1,6 +1,7 @@
 """
 @author: Maziar Raissi
 """
+# Forward: given model/pde parameters λ -> u(t, x)
 
 import sys
 sys.path.insert(0, '../../Utilities/') # for plotting
@@ -32,6 +33,7 @@ class PhysicsInformedNN:
         self.lb = lb
         self.ub = ub
         self.layers = layers
+
         # Initialize NN
         self.weights, self.biases = self.initialize_NN(layers)
         # number of cols = 1
@@ -41,7 +43,7 @@ class PhysicsInformedNN:
         self.u_xe_tf = tf.placeholder(tf.float32, shape=[None, self.u_xe.shape[1]]) # (1, 1)
         self.xf_tf = tf.placeholder(tf.float32, shape=[None, self.xf.shape[1]]) # (30, 1)
 
-        # tf Graphs: return u, u_x, f
+        # tf Graphs: u, u_x, f = net_all(x)
         self.u0_pred, _ , _ = self.net_all(self.x0_tf)
         _ , self.u_xe_pred, _ = self.net_all(self.xe_tf)
         self.uf_pred, self.u_xf_pred, self.f_pred = self.net_all(self.xf_tf) # used in predict (only call net_all once)
@@ -134,7 +136,7 @@ if __name__ == "__main__":
     lb = np.array([0])
     ub = np.array([np.pi])
     
-    layers = [1, 20, 20, 20, 1] # 5-layer deep NN with 100 neurons/layer & hyperbolic tangent act. func.
+    layers = [1, 20, 20, 20, 1] # 4-layer deep NN with 20 neurons/layer & hyperbolic tangent act. func.
     
     ## Getting ground truth data based on analytical solution 
     # analytical solution: u(x) = -sin(x)
@@ -143,7 +145,7 @@ if __name__ == "__main__":
     # u = np.sin(x) # [[0] [1] [1.2246468e-16]]
     
     ###########################
-    ## PART 2：randomly picking the training set from full analytical solution for uniform grid
+    ## PART 2：randomly picking/preping the training set from full analytical solution for uniform grid
     # people perfer deterministic way now: want to make sure points cover whole domain/dense everywhere
     # random: better for complex geometrical problem
     x0 = np.array([[0]])
@@ -160,12 +162,12 @@ if __name__ == "__main__":
     ## PART 3: forming the network, training, predicting
     model = PhysicsInformedNN(x0, u0, xe, u_xe, xf, layers, lb, ub)
              
-    N_t = 50
-    xt = np.reshape(np.linspace(0, np.pi, N_t), (-1, 1)) # [[0] [pi/2] [pi]]
+    N_test = 50
+    xt = np.reshape(np.linspace(0, np.pi, N_test), (-1, 1)) # [[0] [pi/2] [pi]]
     ut = -1 * np.sin(xt)
 
     start_time = time.time()
-    # Loss: 10^-3/-4 should be about good
+    # Note: loss around 10^-3/-4 should be about good
     loss_values = []
     u_preds = [] # 4 * (50, 1)
     f_preds = [] # 4 * (50, 1)
@@ -211,8 +213,9 @@ if __name__ == "__main__":
     last_tuple = (N_iter,loss_values[-1])
     plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=7)
     fig.subplots_adjust(right=0.86)
-    # Oscillation: 1. overshoot (fixed -> decaying learning rate) 
-    # 2/ Adam: gradient descent + momentum (sometime parameter change makes the loss go up)
+    # Oscillation: actually very small nummerical difference because of small y scale
+    # 1. overshoot (fixed -> decaying learning rate) 
+    # 2. Adam: gradient descent + momentum (sometime parameter change makes the loss go up)
     plt.savefig('./figures/forward_1d_loss.pdf')
 
     # 2. plot u vs x

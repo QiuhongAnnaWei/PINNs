@@ -1,6 +1,7 @@
 """
 @author: Maziar Raissi
 """
+# Forward: given model/pde parameters λ -> u(t, x)
 
 import sys
 sys.path.insert(0, '../../Utilities/')
@@ -41,9 +42,9 @@ class PhysicsInformedNN:
         self.ub = ub
         self.x0 = X0[:,0:1] # 2d: [[1] [0.5]]
         self.t0 = X0[:,1:2]
-        self.x_lb = X_lb[:,0:1]
+        self.x_lb = X_lb[:,0:1] # lb[0]
         self.t_lb = X_lb[:,1:2]
-        self.x_ub = X_ub[:,0:1]
+        self.x_ub = X_ub[:,0:1] # ub[0]
         self.t_ub = X_ub[:,1:2]
         self.x_f = X_f[:,0:1]
         self.t_f = X_f[:,1:2]
@@ -142,7 +143,7 @@ class PhysicsInformedNN:
         return Y
     
     def net_uv(self, x, t):
-        X = tf.concat([x,t],1)  # input
+        X = tf.concat([x,t],1) # input
         # x = [[-0.5], [0.5]] # t = [[0], [1]]
         # [[-0.5, 0]
         #  [0.5,  1]]
@@ -246,7 +247,7 @@ if __name__ == "__main__":
     Exact_v = np.imag(Exact)
     Exact_h = np.sqrt(Exact_u**2 + Exact_v**2)
 
-    ## Reformatting the ground truth data for calculating errors
+    ## Reformatting the ground truth data for calculating errors later
     X, T = np.meshgrid(x,t) # making 2-d grid from two 1-d arrays
     # [[0 0.5 1 ]
     #  [0 0.5 1 ]]
@@ -263,7 +264,8 @@ if __name__ == "__main__":
     ## PART 2：randomly picking the training set from the data (no full analytical solution for uniform grid)
     # people perfer deterministic way now: want to make sure points cover whole domain/dense everywhere
     # random: better for complex geometrical problem
-    # TODO: use analytical solution for uniform grid
+    # NOTE: can use analytical solution for uniform grid
+    
     # initial data (x) + corresponding u/v ftom file -> used in training
     idx_x = np.random.choice(x.shape[0], N0, replace=False) # random indices
     x0 = x[idx_x,:] # [[1] [0.5]]
@@ -274,11 +276,12 @@ if __name__ == "__main__":
     idx_t = np.random.choice(t.shape[0], N_b, replace=False) # random indices
     tb = t[idx_t,:]
     
-    X_f = lb + (ub-lb)*lhs(2, N_f) # dense collocation points from near-random sampling
+    # dense collocation points (for f=0) from near-random sampling -> used in training
+    X_f = lb + (ub-lb)*lhs(2, N_f)
         # [[ 2.28434627  0.58958455]
         #  [-4.3445426   1.25654662]
         #  [ 4.28407126  1.37822203]...] (N_f rows of (x, t))
-    # TODO: uniform meshgrid is fine for rectangular domain
+    # NOTE: uniform meshgrid is fine for rectangular domain
 
     ###########################  
     ## PART 3: forming the network, training, predicting
@@ -305,7 +308,7 @@ if __name__ == "__main__":
     ## PART 5: In order to plot, interpolate from prediction data to match ground truth grid (X_star)
     # TODO: for us, can use analytical solution to generate values for X_f directly
     # NOTE: interpolation -> for shape matching/consistency (compare result) OR structure (plot)
-    # X_star: coordinates. 2nd entry: values, (X, T): points at which to interpolate data
+    # X_star: coordinates (for ground truth + pred); 2nd entry: values; (X, T): points at which to interpolate data
     U_pred = griddata(X_star, u_pred.flatten(), (X, T), method='cubic')
     V_pred = griddata(X_star, v_pred.flatten(), (X, T), method='cubic')
     H_pred = griddata(X_star, h_pred.flatten(), (X, T), method='cubic')
