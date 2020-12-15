@@ -13,7 +13,7 @@ from scipy.interpolate import griddata
 import scipy.io
 import numpy as np
 import tensorflow as tf
-import sys
+import sys, os
 sys.path.insert(0, '../../Utilities/')  # for plotting
 
 # from plotting import newfig, savefig
@@ -177,8 +177,14 @@ if __name__ == "__main__":
     # TODO: try a mix of edges + boundary
     # NOTE: need at least one edge to be u(x, y), otherwise solution have arbitrary constant
 
+    # global settings for all subplots 
+    plt.rcParams['xtick.labelsize'] = 6
+    plt.rcParams['ytick.labelsize'] = 6
+    plt.rcParams['axes.labelsize'] = 7
+    plt.rcParams['axes.titlesize'] = 8
+
     ###########################
-    # PART 1: setting parameters and getting accurate data for evaluation
+    ## PART 1: setting parameters and getting accurate data for evaluation
 
     # Domain bounds
     lowerbound = np.array([0, 0])
@@ -188,169 +194,157 @@ if __name__ == "__main__":
     layers = [2, 50, 50, 50, 1]
 
     ###########################
-    # PART 2：randomly picking the training set from full analytical solution for uniform grid
+    ## PART 2：setting training and testing data from full analytical solution for uniform grid
 
     # boundary data (t) ftom file -> used in training
     N_b = 20
-    # [[0] [0.5] [1]]
-    xb = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_b), (-1, 1))
+    xb = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_b), (-1, 1)) # [[0] [0.5] [1]]
     yb = np.reshape(np.linspace(lowerbound[1], upperbound[1], N_b), (-1, 1))
     ul = -1 * yb**2
     ur = 1 - yb**2 + 3 * yb
     ub = xb**2
     ut = xb**2 - 1 + 3 * xb
 
-    # dense collocation points (for f=0) from uniform grid -> used in training
-    # want PDE satisfied at positions arbitrarily close to boundary -> add boundary points to collocation points
-    N_f = 20  # Number of collocation points
-    # [[0] [0.5] [1]] (N_f, 1)
-    xf = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_f), (-1, 1))
-    # [[0] [0.5] [1]] (N_f, 1)
-    yf = np.reshape(np.linspace(lowerbound[1], upperbound[1], N_f), (-1, 1))
-    # X0 = [[0 0.5 1] [0 0.5 1] [0 0.5 1]] # Y0 = [[0 0 0] [0.5 0.5 0.5] [1 1 1]]
-    xf_mesh, yf_mesh = np.meshgrid(xf, yf)
+    # collocation points for enforcing f=0 from uniform grid -> used in training
+    # NOTE: want PDE satisfied at positions arbitrarily close to boundary -> add boundary points to collocation points
+    N_f = 20 
+    xf = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_f), (-1, 1)) # [[0] [0.5] [1]] (N_f, 1)
+    yf = np.reshape(np.linspace(lowerbound[1], upperbound[1], N_f), (-1, 1)) # [[0] [0.5] [1]] (N_f, 1)
+    xf_mesh, yf_mesh = np.meshgrid(xf, yf) # [[0 0.5 1] [0 0.5 1] [0 0.5 1]], [[0 0 0] [0.5 0.5 0.5] [1 1 1]]
     # shape: (N_f * N_f, 1) because in net_all: X = tf.concat([x,y],1)
-    # [[0] [0.5] [1] [0] [0.5] [1] [0] [0.5] [1]]
-    xf_grid = np.reshape(xf_mesh.flatten(), (-1, 1))
-    # [[0] [0] [0] [0.5] [0.5] [0.5] [1] [1] [1]]
-    yf_grid = np.reshape(yf_mesh.flatten(), (-1, 1))
+    xf_grid = np.reshape(xf_mesh.flatten(), (-1, 1)) # [[0] [0.5] [1] [0] [0.5] [1] [0] [0.5] [1]]
+    yf_grid = np.reshape(yf_mesh.flatten(), (-1, 1)) # [[0] [0] [0] [0.5] [0.5] [0.5] [1] [1] [1]]
+
+    # testing data
+    N_test = 50  # NOTE: different from collocation points
+    xtest = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_test), (-1, 1))  # (N_test, 1)
+    ytest = np.reshape(np.linspace(lowerbound[1], upperbound[1], N_test), (-1, 1))  # (N_test, 1)
+    xtest_mesh, ytest_mesh = np.meshgrid(xtest, ytest)  # (N_test, N_test)
+    xtest_grid = np.reshape(xtest_mesh.flatten(),(-1, 1))  # (N_test * N_test, 1)
+    ytest_grid = np.reshape(ytest_mesh.flatten(), (-1, 1))  # (N_test * N_test, 1)
+    u_test = xtest_grid**2 - ytest_grid**2 + 3 * xtest_grid * ytest_grid  # (N_test * N_test, 1)
 
     ###########################
-    # PART 3: forming the network, training, predicting
-    model = PhysicsInformedNN(xb, yb, ul, ur, ub, ut,
-                              xf_grid, yf_grid, layers, lowerbound, upperbound)
-
-    N_test = 50  # NOTE: different from collocation points
-    xtest = np.reshape(np.linspace(
-        lowerbound[0], upperbound[0], N_test), (-1, 1))  # (N_test, 1)
-    ytest = np.reshape(np.linspace(
-        lowerbound[1], upperbound[1], N_test), (-1, 1))  # (N_test, 1)
-    xtest_mesh, ytest_mesh = np.meshgrid(xtest, ytest)  # (N_test, N_test)
-    xtest_grid = np.reshape(xtest_mesh.flatten(),
-                            (-1, 1))  # (N_test * N_test, 1)
-    ytest_grid = np.reshape(ytest_mesh.flatten(),
-                            (-1, 1))  # (N_test * N_test, 1)
-    u_test = xtest_grid**2 - ytest_grid**2 + 3 * \
-        xtest_grid * ytest_grid  # (N_test * N_test, 1)
+    ## PART 3: forming the network, training, predicting
+    model = PhysicsInformedNN(xb, yb, ul, ur, ub, ut,xf_grid, yf_grid, layers, lowerbound, upperbound)
 
     start_time = time.time()
+    dirpath = f'./2d/forward_2d_figures/{start_time}' # where figures are stored
+    os.mkdir(dirpath)
     # Note: loss around 10^-3/-4 should be about good
-    loss_values = []
-    u_preds = []
-    f_preds = []
+    loss_values, u_preds, f_preds = ([] for i in range(3))
     N_iter = 9000
+    loss_value_step = 10
+    u_pred_step = 1000
     for i in range(N_iter):
         loss_value = model.train()
-        if (i+1) % 10 == 0:  # wouldn't plot in beginning, but plot at the end
+        if (i+1) % loss_value_step == 0:  # wouldn't plot in beginning, but plot at the end
             loss_values.append(loss_value)
             print('Iter: %d, Loss: %.3e, Time: %.2f' %
                   (i+1, loss_value, time.time() - start_time))
-        if (i+1) % 1000 == 0:  # wouldn't plot in beginning, but plot at the end
+        if (i+1) % u_pred_step == 0:  # start with i=999 and end with i=8999 (last iter)
             # f = u_xx - tf.sin(x) # xt: (50, 1)
             u_pred, f_pred = model.predict(xtest_grid, ytest_grid)
             u_preds.append(u_pred)  # (N_test * N_test, 1)
             f_preds.append(f_pred)  # (N_test * N_test, 1)
+            fig = plt.figure()
+            ax = plt.subplot(1,2,1)
+            cset1 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_test, (N_test, N_test)), levels=30, cmap='winter')
+            plt.gca().set(xlabel='$x$', ylabel='$y$', title='Exact')
+            ax = plt.subplot(1,2,2)
+            cset2 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_pred, (N_test, N_test)), levels=30, cmap='winter')
+            plt.gca().set(xlabel='$x$', ylabel='$y$', title='Prediction')
+            fig.subplots_adjust(right=0.8)
+            cbar_ax = plt.axes([0.85, 0.12, 0.05, 0.76]) # Axes into which the colorbar will be drawn
+            fig.colorbar(cset2, cax=cbar_ax)
+            plt.savefig(f'{dirpath}/forward_2d_contour_iter{i+1}.pdf')
+ 
     u_preds = np.array(u_preds)
     f_preds = np.array(f_preds)
 
     # print("loss_values:", loss_values)
     print('Training time: %.4f' % (time.time() - start_time))
-    u_pred, f_pred = model.predict(xtest_grid, ytest_grid)
-    # print('final u_pred:', upred)
+    # print('final u_pred:', u_pred)
     # print('final f_pred:', f_pred)
     # NOTE: what is important is the function u_pred resembles, not so much the parameters (weigths & biases)
     # NOTE: if no analytical solution, find numerical method/other method to verify -> directly use network
 
    ###########################
-    # PART 4: calculating errors
+    ## PART 4: calculating errors
     error_u = np.linalg.norm(u_pred - u_test, 2) / np.linalg.norm(u_test, 2)
     print('Error u: %e' % (error_u))  # 5.558028e-04
 
-    print('final f_pred:', f_pred)
+    # print('final f_pred:', f_pred)
 
     ###########################
-    # PART 5: Plotting
-    # 1. plot loss_values (loss vs. iteration)
+    ## PART 5: Plotting
+    # 1. Exact vs Prediction of u (contour) during training
+    # 2. loss vs. iteration + MSE of u_pred and u_test vs. iteration
     fig = plt.figure()
-    x_coords = 10*(np.array(range(len(loss_values))) + 1)
-    # linear X axis, logarithmic y axis(log scaling on the y axis)
-    plt.semilogy(x_coords, loss_values)
-    plt.xlabel("Iteration")
-    plt.ylabel("Loss")
-    plt.title("Loss during Training")
-    init_tuple = (10, loss_values[0])
-    plt.annotate('(%d, %.3e)' % init_tuple, xy=init_tuple,
-                 textcoords='data', fontsize=7)
+    plt.subplot(2,1,1)
+    x_coords = loss_value_step * (np.array(range(len(loss_values))) + 1)
+    plt.semilogy(x_coords, loss_values) # linear X axis, logarithmic y axis(log scaling on the y axis)
+    plt.gca().set(xlabel='Iteration', ylabel='Loss', title='Loss during Training')
+    init_tuple = (loss_value_step, loss_values[0])
+    plt.annotate('(%d, %.3e)' % init_tuple, xy=init_tuple, textcoords='data', fontsize=7)
     last_tuple = (N_iter, loss_values[-1])
-    plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple,
-                 textcoords='data', fontsize=7)
+    plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=7)
     fig.subplots_adjust(right=0.86)
-    # Oscillation: actually very small nummerical difference because of small y scale
+    # NOTE: Oscillation: actually very small nummerical difference because of small y scale
     # 1. overshoot (fixed -> decaying learning rate)
     # 2. Adam: gradient descent + momentum (sometime parameter change makes the loss go up)
-    plt.savefig('./forward_2d_figures/forward_2d_loss.pdf')
+    
+    plt.subplot(2,1,2)
+    u_mses = [] # 2d array [ [mse1] [mse2] [mse3]]
+    for u_pred in u_preds:  # (N_test * N_test, 1)
+        u_mses.append(((u_pred - u_test)**2).mean(axis=0)) # append [mse for that iteration]
+    x_coords = u_pred_step * (np.array(range(len(u_preds))) + 1)
+    u_mses = np.array(u_mses)
+    annots = list(zip(x_coords, u_mses.flatten())) # [(1000, 4.748), (2000, 9.394)]
+    print("annot:", annots)
+    plt.semilogy(x_coords, u_mses, '.-')
+    for annot in annots:
+        plt.annotate('(%d, %.3e)' % annot, xy=annot, textcoords='data', fontsize=6)
+    plt.gca().set(xlabel='Iteration', ylabel='MSE of u', title='MSE of u during Training')
 
-    # 2. plot u vs (x, y): surface
-    # print("u_preds.shape", u_preds.shape) # (9, 2500, 1)
-    # print("f_preds.shape", f_preds.shape) # (9, 2500, 1)
+    fig.subplots_adjust(hspace=0.4)
+    plt.savefig(f'{dirpath}/forward_2d_loss.pdf')
+
+    # 3. plot u vs (x, y) and |u_pred-u_test| vs (x,y): contour
+    fig = plt.figure()
+    gs = gridspec.GridSpec(nrows=2, ncols=3, figure=fig, width_ratios=[6, 6, 1], height_ratios=[1, 1])
+    ax = fig.add_subplot(gs[0, 0])
+    cset1 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_test, (N_test, N_test)), levels=30, cmap='winter')
+    plt.gca().set(xlabel='$x$', ylabel='$y$', title='Exact') # $: mathematical font like latex
+
+    ax = fig.add_subplot(gs[0, 1])
+    cset2 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_pred, (N_test, N_test)), levels=30, cmap='winter')
+    plt.gca().set(xlabel='$x$', ylabel='$y$', title='Prediction') # $: mathematical font like latex
+
+    ax = fig.add_subplot(gs[0, 2])
+    fig.colorbar(cset2, cax=ax)
+
+    ax = fig.add_subplot(gs[1, 0:2])
+    cset3 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(np.abs(u_pred-u_test), (N_test, N_test)), levels=30, cmap='autumn')
+    plt.gca().set(xlabel='$x$', ylabel='$y$', title='|Prediction - Exact|')
+    ax = fig.add_subplot(gs[1, 2])
+    fig.colorbar(cset3, cax=ax)
+
+    fig.subplots_adjust(wspace=0.3, hspace=0.3)
+    plt.savefig(f'{dirpath}/forward_2d_contour.pdf')
+
+    # 4. plot u vs (x, y): surface
     fig = plt.figure()
     ax = plt.subplot(1, 2, 1, projection='3d')
-    ax.plot_surface(xtest_mesh, ytest_mesh, np.reshape(u_test, (N_test, N_test)),
-                    label='Exact', cmap='winter')  # Data values as 2D arrays: (N_test * N_test, 1)
-    ax.set_xlabel('$x$', fontsize=6)  # $: mathematical font like latex
-    ax.set_ylabel('$y$', fontsize=6)
-    ax.set_zlabel('$u$', fontsize=6)
-    plt.xticks(fontsize=6)
-    plt.yticks(fontsize=6)
-    # ax.zticks(fontsize=6)
-    ax.set_title('Exact', fontsize=8)
+    ax.plot_surface(xtest_mesh, ytest_mesh, np.reshape(u_test, (N_test, N_test)), label='Exact', cmap='winter')  # Data values as 2D arrays: (N_test * N_test, 1)
+    plt.gca().set(xlabel='$x$', ylabel='$y$', zlabel='$u$', title='Exact')
+    # ax.set_zlabel('$u$', fontsize=6) 
+    ax.tick_params(labelsize=6)
 
     ax = plt.subplot(1, 2, 2, projection='3d')
-    ax.plot_surface(xtest_mesh, ytest_mesh, np.reshape(u_pred, (N_test, N_test)),
-                    label='Prediction', cmap='winter')  # Data values as 2D arrays: (N_test * N_test, 1)
-    ax.set_xlabel('$x$', fontsize=6)  # $: mathematical font like latex
-    ax.set_ylabel('$y$', fontsize=6)
-    ax.set_zlabel('$u$', fontsize=6)
-    plt.xticks(fontsize=6)
-    plt.yticks(fontsize=6)
-    # ax.zticks(fontsize=6)
-    ax.set_title('Prediction', fontsize=8)
+    ax.plot_surface(xtest_mesh, ytest_mesh, np.reshape(u_pred, (N_test, N_test)), label='Prediction', cmap='winter')  # Data values as 2D arrays: (N_test * N_test, 1)
+    plt.gca().set(xlabel='$x$', ylabel='$y$', zlabel='$u$', title='Prediction')
+    # ax.set_zlabel('$u$', fontsize=6)
+    ax.tick_params(labelsize=6)
 
-    # TODO: add testing for every 1000 iterations and save while training -> can set N_iter to be large
-    # TODO: graph MSE/l2 error of prediction vs exact vs iteration
-
-    # for i in range(u_preds.shape[0]): # 4
-    #     ax = plt.subplot(2, 2, i+1)
-    #     exact_plot, = ax.plot(xt, ut, 'b-', label = 'Exact') # tuple unpacking
-    #     pred_plot, = ax.plot(xt, u_preds[i], 'r--', label = 'Prediction')
-    #     ax.set_xlabel('$x$',fontsize=6) # $: mathematical font like latex
-    #     ax.set_ylabel('$u$',fontsize=6)
-    #     plt.xticks(fontsize=6)
-    #     plt.yticks(fontsize=6)
-    #     ax.set_title('$Iteration = %d$' % ((i+1)*1000), fontsize = 8)
-    # plt.figlegend(handles=(exact_plot, pred_plot),labels=('Exact', 'Prediction'), loc='upper center', ncol=2, fontsize=7) # from last subplot
-    # fig.subplots_adjust(wspace=0.35, hspace=0.45)
-    plt.savefig('./forward_2d_figures/forward_2d_surface.pdf')
-
-    # 3. plot u vs (x, y): contour
-    fig = plt.figure()
-    ax = plt.subplot(1, 2, 1)
-    ax.contourf(xtest_mesh, ytest_mesh, np.reshape(
-        u_test, (N_test, N_test)), levels=30, cmap='winter')
-    ax.set_xlabel('$x$', fontsize=6)  # $: mathematical font like latex
-    ax.set_ylabel('$y$', fontsize=6)
-    plt.xticks(fontsize=6)
-    plt.yticks(fontsize=6)
-    ax.set_title('Exact', fontsize=8)
-
-    ax = plt.subplot(1, 2, 2)
-    ax.contourf(xtest_mesh, ytest_mesh, np.reshape(
-        u_pred, (N_test, N_test)), levels=30, cmap='winter')
-    ax.set_xlabel('$x$', fontsize=6)  # $: mathematical font like latex
-    ax.set_ylabel('$y$', fontsize=6)
-    plt.xticks(fontsize=6)
-    plt.yticks(fontsize=6)
-    ax.set_title('Prediction', fontsize=8)
-    plt.savefig('./forward_2d_figures/forward_2d_contour.pdf')
-    # TODO: color bar
-    # TODO: can also plot difference -> can find max/min
+    plt.savefig(f'{dirpath}/forward_2d_surface.pdf')
