@@ -359,7 +359,7 @@ if __name__ == "__main__":
     gs1 = gridspec.GridSpec(1, 3)
     gs1.update(top=1-1/3, bottom=0, left=0.1, right=0.9, wspace=0.5)
     
-    # 75, 100, 125: timestamp
+    # 75, 100, 125th entries
     ax = plt.subplot(gs1[0, 0])
     ax.plot(x,Exact_h[:,75], 'b-', linewidth = 2, label = 'Exact')       
     ax.plot(x,H_pred[75,:], 'r--', linewidth = 2, label = 'Prediction')

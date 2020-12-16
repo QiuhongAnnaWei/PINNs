@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 import sys
+import json
+import os
 sys.path.insert(0, '../../Utilities/')  # for plotting
 
 # from plotting import newfig, savefig
@@ -24,63 +26,53 @@ sys.path.insert(0, '../../Utilities/')  # for plotting
 
 class PhysicsInformedNN:
     # Initialize the class (x_train, u_train, layers)
-    def __init__(self, x0, u0, xe, u_xe, xo, uo, xr, layers):
+    def __init__(self, x0, u0, xb, u_xb, xo, uo, xr, lambda0, layers):
         self.x0 = x0
         self.u0 = u0
-        self.xe = xe
-        self.u_xe = u_xe
+        self.xb = xb
+        self.u_xb = u_xb
         self.xo = xo
         self.uo = uo
-        self.xr = xr  # NOTE: separate from observed data: want residual = 0 everywhere
-        self.lb = np.array([0])
-        self.ub = np.array([np.pi])
+        self.xr = xr
+
+        self.lowerbound = np.array([0])
+        self.upperbound = np.array([np.pi])
         self.layers = layers
         # Initialize NN
         self.weights, self.biases = self.initialize_NN(layers)
 
-        self.lambda_1 = tf.Variable([0.0], dtype=tf.float32)
+        self.lambda_1 = tf.Variable([lambda0[0]], dtype=tf.float32)
+        self.lambda_2 = tf.Variable([lambda0[1]], dtype=tf.float32)
+
         # number of cols = 1
-        self.x0_tf = tf.placeholder(
-            tf.float32, shape=[None, self.x0.shape[1]])  # (1, 1)
-        self.u0_tf = tf.placeholder(
-            tf.float32, shape=[None, self.u0.shape[1]])  # (1, 1)
-        self.xe_tf = tf.placeholder(
-            tf.float32, shape=[None, self.xe.shape[1]])  # (1, 1)
-        self.u_xe_tf = tf.placeholder(
-            tf.float32, shape=[None, self.u_xe.shape[1]])  # (1, 1)
-        self.xo_tf = tf.placeholder(
-            tf.float32, shape=[None, self.xo.shape[1]])  # N_train x 1
-        self.uo_tf = tf.placeholder(
-            tf.float32, shape=[None, self.uo.shape[1]])  # N_train x 1
-        self.xr_tf = tf.placeholder(
-            tf.float32, shape=[None, self.xr.shape[1]])  # N_res x 1
+        self.x0_tf = tf.placeholder(tf.float32, shape=[None, self.x0.shape[1]])  # (1, 1)
+        self.u0_tf = tf.placeholder(tf.float32, shape=[None, self.u0.shape[1]])  # (1, 1)
+        self.xb_tf = tf.placeholder(tf.float32, shape=[None, self.xb.shape[1]])  # (1, 1)
+        self.u_xb_tf = tf.placeholder(tf.float32, shape=[None, self.u_xb.shape[1]])  # (1, 1)
+        self.xo_tf = tf.placeholder(tf.float32, shape=[None, self.xo.shape[1]])  # N_train x 1
+        self.uo_tf = tf.placeholder(tf.float32, shape=[None, self.uo.shape[1]])  # N_train x 1
+        self.xr_tf = tf.placeholder(tf.float32, shape=[None, self.xr.shape[1]])  # N_res x 1
 
         # tf Graphs: return u, u_x, f
         self.u0_pred, _, _ = self.net_all(self.x0_tf)
-        _, self.u_xe_pred, _ = self.net_all(self.xe_tf)
+        _, self.u_xb_pred, _ = self.net_all(self.xb_tf)
         self.uo_pred, _, _ = self.net_all(self.xo_tf)
         _, _, self.f_pred = self.net_all(self.xr_tf)
 
-        # u''(x) = sin(x), x in [0, pi]
-        # u(0) = 0
-        # u'(pi) = 1
         # Loss: initial + boundary + observed data + PDE
         self.loss = tf.reduce_mean(tf.square(self.u0_tf - self.u0_pred)) + \
-            tf.reduce_mean(tf.square(self.u_xe_tf - self.u_xe_pred)) + \
-            tf.reduce_mean(tf.square(self.uo_tf - self.uo_pred)) + \
-            tf.reduce_mean(tf.square(
-                self.f_pred))  # f_pred = u_xx - sin(x) = 0 # NOTE: different fromm the observed data
+                    tf.reduce_mean(tf.square(self.u_xb_tf - self.u_xb_pred)) + \
+                    tf.reduce_mean(tf.square(self.uo_tf - self.uo_pred)) + \
+                    tf.reduce_mean(tf.square(self.f_pred))  # NOTE: different from the observed data
         # tf.reduce_mean: computes the mean of elements across dimensions of a tensor
 
         # Optimizers:
         # return a minimization Op (a graph node that performs computation on tensors) -> updates lambdaxxx
-        self.train_op_Adam = tf.train.AdamOptimizer(
-            learning_rate=0.001).minimize(self.loss)
+        self.train_op_Adam = tf.train.AdamOptimizer(learning_rate=0.001).minimize(self.loss)
         # NOTE: default: learning_rate=0.001 (typically 0.001 is the max, can make smaller)
         # tf session: initiates a tf Graph(defines computations) in which tensors are processed through operations + allocates resources and holds intermediate values
         self.sess = tf.Session()
-        # variables now hold the values from declarations: tf.Variable(tf.zeros(...)), tf.Variable(tf.random_normal(...)), etc
-        init = tf.global_variables_initializer()
+        init = tf.global_variables_initializer() # variables now hold the values from declarations: tf.Variable(tf.zeros(...)), tf.Variable(tf.random_normal(...)), etc
         self.sess.run(init)  # required to initialize the variables
 
     def initialize_NN(self, layers):
@@ -107,8 +99,7 @@ class PhysicsInformedNN:
 
     def neural_net(self, X, weights, biases):
         num_layers = len(weights) + 1  # 6 in this case
-        # Initializing first input: mapping to [-1, 1]
-        H = 2.0*(X - self.lb)/(self.ub - self.lb) - 1.0
+        H = 2.0*(X - self.lowerbound)/(self.upperbound - self.lowerbound) - 1.0 # Initializing first input: mapping to [-1, 1]
         for l in range(0, num_layers-2):
             W = weights[l]
             b = biases[l]
@@ -121,25 +112,22 @@ class PhysicsInformedNN:
 
     def net_all(self, x):
         lambda_1 = self.lambda_1
+        lambda_2 = self.lambda_2
         u = self.neural_net(x, self.weights, self.biases)
         u_x = tf.gradients(u, x)[0]
         u_xx = tf.gradients(u_x, x)[0]
-        f = u_xx - lambda_1 * tf.sin(x)  # f = u_xx - lambda_1 * sin(x) = 0
+        f = u_xx - lambda_1 * tf.sin(lambda_2 * x)
         return u, u_x, f
-
-    def callback(self, loss, lambda_1):
-        print('Loss: %.3e, l1: %.5f' % (loss, lambda_1))
 
     def train(self):  # one iteration: uses all training data from tf_dict and updates lambda
         tf_dict = {self.x0_tf: self.x0, self.u0_tf: self.u0,
-                   self.xe_tf: self.xe, self.u_xe_tf: self.u_xe,
+                   self.xb_tf: self.xb, self.u_xb_tf: self.u_xb,
                    self.xo_tf: self.xo, self.uo_tf: self.uo, self.xr_tf: self.xr}
         # feeding training examples during training and running the minimization Op of self.loss
         self.sess.run(self.train_op_Adam, tf_dict)
-        # self.lambda_1 does not need tf_dict
-        loss_value, lambda_1 = self.sess.run(
-            [self.loss, self.lambda_1], tf_dict)
-        return loss_value, lambda_1
+        # self.lambda_1 and self.lambda_2 do not need tf_dict
+        loss_value, lambda_1, lambda_2 = self.sess.run([self.loss, self.lambda_1, self.lambda_2], tf_dict)
+        return loss_value, lambda_1, lambda_2
 
     def predict(self, x):
         tf_dict = {self.xo_tf: x, self.xr_tf: x}  # no need for u
@@ -149,166 +137,178 @@ class PhysicsInformedNN:
 
 
 if __name__ == "__main__":
-    # u''(x) = lambda_1 * sin(lambda_2 * x), x in [0, pi] [u''(x) = 9 * sin(3x)]
-    # NOTE: lambda defined in f/pde, not in u(x)
-    # NOTE: to uniquely identify lambda, typically need boundary condition
+    # u''(x) = lambda_1 * sin(lambda_2 * x), x in [0, pi] -> u''(x) = 9 * sin(3 * x)
+        # NOTE: lambda defined in f/pde, not in u(x)
+        # NOTE: to uniquely identify lambda, typically need boundary condition
     # u(0) = 0
-    # u'(pi) = 1, u'(x) = - 3cos(3x)
-    # NOTE: analytically given initial and boundary -> used in loss (identical to forward implementation)
+    # u'(pi) = 3, u'(x) = - 3 cos(3x)
+        ## NOTE: analytically given initial and boundary -> used in loss (identical to forward implementation)
     # analytical solution: u(x) = - sin(3x)
     ###########################
-    # PART 1: initialization
+    ## PART 1: initialization
     # 5-layer deep NN with 100 neurons/layer & hyperbolic tangent act. func.
     layers = [1, 20, 20, 20, 1]
 
     ###########################
-    # PART 2：training data
+    ## PART 2：training data
+    # initial condition
     x0 = np.array([[0]])
     u0 = np.array([[0]])
-    xe = np.array([[np.pi]])
-    u_xe = np.array([[1]])
-    # N_train = 4
-    # x_train = np.reshape(np.linspace(0.3, np.pi-0.3, N_train), (-1, 1))
-    # u_train = -1 * np.sin(x_train) # analytical solution
-    # [[0.1][1.57079633][3.04159265]]
-    # [[0.3] [1.14719755] [1.9943951] [2.84159265]]
-    x_train = np.array([[2.1]])
-    u_train = -1 * np.sin(x_train)  # analytical solution
-    N_res = 20
-    x_res = np.reshape(np.linspace(0, np.pi, N_res), (-1, 1))
 
+    # boundary condition
+    xb = np.array([[np.pi]])
+    u_xb = np.array([[3]])
+
+    # observed u based on analytical solution
+    N_train = 5
+    x_train = np.reshape(np.linspace(0.2, np.pi-0.2, N_train), (-1, 1))
+    # x_train = np.array([[1.1], [2.1]])
+    u_train = -1 * np.sin(3 * x_train)
+
+    # collocation points for enforcing f=0
+    # NOTE: separate from observed data: want f/residual = 0 everywhere
+    N_res = 30
+    x_res = np.reshape(np.linspace(0, np.pi, N_res), (-1, 1)) # collocation points
+
+    # initial values for lambdas
+    lambda0 = np.array([5, 2])
     ###########################
-    # PART 3: forming the network, training, predicting
-    model = PhysicsInformedNN(
-        x0, u0, xe, u_xe, x_train, u_train, x_res, layers)
+    ## PART 3: forming the network, training, predicting
+    model = PhysicsInformedNN(x0, u0, xb, u_xb, x_train, u_train, x_res, lambda0, layers)
 
-    N_t = 50
-    xt = np.reshape(np.linspace(0, np.pi, N_t), (-1, 1))  # [[0] [pi/2] [pi]]
-    ut = -1 * np.sin(xt)
+    N_test = 50
+    xt = np.reshape(np.linspace(0, np.pi, N_test), (-1, 1))  # [[0] [pi/2] [pi]]
+    ut = -1 * np.sin(3 * xt)
 
     start_time = time.time()
+    dirpath = f'./1d/inverse_1d_figures/{start_time}' # where figures are stored
+    os.mkdir(dirpath)
     # Loss: 10^-3/-4 should be about good
-    loss_values = []
-    lambda_1s = []
-    u_preds = []  # 4 * (50, 1)
-    f_preds = []  # 4 * (50, 1)
-    N_iter = 4000
+    loss_values, u_preds, f_preds = ([] for i in range(3))
+    lambda_1s = [lambda0[0]] # 1d - initial
+    lambda_2s = [lambda0[1]] # 1d - initial
+    N_iter = 18000
+    loss_value_step = 10
+    pred_step = 2000
     for i in range(N_iter):
-        loss_value, lambda_1 = model.train()
-        if i == 0:
-            initial_loss = loss_value
-            initial_lambda_1_value = lambda_1
-        if (i+1) % 10 == 0:  # wouldn't plot in beginning, but plot at the end
+        loss_value, lambda_1, lambda_2 = model.train() # from last iteration
+        if (i+1) % loss_value_step == 0:  # start with i=9 and end with i=3999 (last iter)
             loss_values.append(loss_value)
             lambda_1s.append(lambda_1)
-            print('Iter: %d, Loss: %.3e, Lambda_1: %.5f, Time: %.2f' %
-                  (i+1, loss_value, lambda_1, time.time() - start_time))
-        if (i+1) % 1000 == 0:  # wouldn't plot in beginning, but plot at the end
-            # f = u_xx - tf.sin(x) # xt: (50, 1)
+            lambda_2s.append(lambda_2)
+            print('Iter: %d, Loss: %.3e, Lambda_1: %.5f, lambda_2: %.5f, Time: %.2f' %
+                  (i+1, loss_value, lambda_1, lambda_2, time.time() - start_time))
+        if (i+1) % pred_step == 0:  # start with i=999 and end with i=3999 (last iter)
             u_pred, f_pred = model.predict(xt)
-            u_preds.append(u_pred)
-            f_preds.append(f_pred)
+            u_preds.append(u_pred) # (50, 1)
+            f_preds.append(f_pred) # (50, 1)
             # print('     u_pred: %.3e, f_pred: %.3e' % (u_pred , f_pred)
-            # print('u_pred:', u_pred.shape) # (50, 1)
-            # print('f_pred:', f_pred.shape) # (50, 1)
-            # analytical solution: u(x) = -sin(x)
-    # plot loss_values (loss-iteration)
-    # 6 graphs
     u_preds = np.array(u_preds)
     f_preds = np.array(f_preds)
-
-    print("loss_values:", loss_values)  # [-3:]
-    print('Training time: %.4f' % (time.time() - start_time))
     u_pred, f_pred = model.predict(xt)
-    lambda_1_value = model.sess.run(model.lambda_1)
-    print("Initial lambda_1: %.5f; Final lambda_1: %.5f" %
-          (initial_lambda_1_value, lambda_1_value))
-    # print("N_train:", N_train)
+    # print("loss_values:", loss_values)  # [-3:]
+    # print("u_preds:", u_preds)
+    # print('Training time: %.4f' % (time.time() - start_time))
+    # lambda_1_value = model.sess.run(model.lambda_1)
+    # lambda_2_value = model.sess.run(model.lambda_2)
+    print("Initial lambda_1: %.5f, Final lambda_1: %.5f | Initial lambda_2: %.5f, Final lambda_2: %.5f" %
+          (lambda0[0], lambda_1, lambda0[1], lambda_2))
     # NOTE: what is important is the function u_pred resembles, not so much the parameters (weigths & biases)
     # NOTE: if no analytical solution, find numerical method/other method to verify -> directly use network
-    # print("u_preds.shape", u_preds.shape) # (10, 50, 1)
-    # print("f_preds.shape", f_preds.shape) # (10, 50, 1)
-    print("x_train:", x_train)
-    print("u_train:", u_train)
     ###########################
-    # PART 4: calculating errors
-    error_u = np.linalg.norm(u_pred - ut, 2) / np.linalg.norm(ut, 2)
-    error_lambda_1 = np.abs(lambda_1_value - 1.0) * \
-        100  # Ground truth: l1 = 1.0
-    print('Error u: %e' % (error_u))
-    print('Error l1: %.5f%%' % (error_lambda_1))
-
+    ## PART 4: calculating errors
+    error_u = np.linalg.norm(u_pred - ut, 2) / np.linalg.norm(ut, 2) # scalar
+    error_lambda_1 = np.abs(lambda_1 - 9)/9 * 100  # Ground truth: lambda_1=9 # 1d np array
+    error_lambda_2 = np.abs(lambda_2 - 3)/3 * 100  # Ground truth: lambda_2=3 # 1d np array
+    print('Error u: %e; | Error lambda_1: %.5f%% | Error lambda_2: %.5f%%' % (error_u, error_lambda_1, error_lambda_2))
     ###########################
-    # PART 5: Plotting
-    # plot loss_values (loss vs. iteration) and lambda vs iteration
-    # fig = plt.figure()
-    # x_coords = 10*(np.array(range(len(loss_values))) + 1)
-    # plt.semilogy(x_coords, loss_values)  # linear X axis, logarithmic y axis(log scaling on the y axis)
-    # plt.xlabel("Iteration")
-    # plt.ylabel("Loss")
-    # plt.title("Loss during Training")
-    # init_tuple = (10,loss_values[0])
-    # plt.annotate('(%d, %.3e)' % init_tuple, xy=init_tuple, textcoords='data', fontsize=7)
-    # last_tuple = (N_iter,loss_values[-1])
-    # plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=7)
-    # fig.subplots_adjust(right=0.8)
-    # plt.savefig('./figures/inverse_1d_loss.pdf')
+    ## PART 5: Plotting
+    # global settings for all subplots 
+    plt.rcParams['xtick.labelsize'] = 6
+    plt.rcParams['ytick.labelsize'] = 6
+    plt.rcParams['axes.labelsize'] = 7
+    plt.rcParams['axes.titlesize'] = 8
 
+    # 1. loss vs. iteration, lambda_1 vs iteration, lambda_2 vs iteration
     fig = plt.figure(figsize=(8, 4.8))
-    plt.subplot(1, 2, 1)
-    x_coords = 10*(np.array(range(len(loss_values))) + 1)
-    # linear X axis, logarithmic y axis(log scaling on the y axis)
-    plt.semilogy(x_coords, loss_values)
-    plt.xlabel("Iteration", fontsize=6)
-    plt.ylabel("Loss", fontsize=6)
-    plt.xticks(fontsize=6)
-    plt.yticks(fontsize=6)
-    plt.title("Loss during Training", fontsize=8)
-    init_tuple = (10, loss_values[0])
-    plt.annotate('(%d, %.3e)' % init_tuple, xy=init_tuple,
-                 textcoords='data', fontsize=6)
+    gs = gridspec.GridSpec(ncols=2, nrows=2, figure=fig)
+    fig.add_subplot(gs[0, :])
+    x_coords = loss_value_step * (np.array(range(len(loss_values))) + 1)
+    plt.semilogy(x_coords, loss_values) # linear X axis, logarithmic y axis(log scaling on the y axis)
+    plt.gca().set(xlabel="Iteration", ylabel="Loss", title="Loss during Training")
+    init_tuple = (loss_value_step, loss_values[0])
+    plt.annotate('(%d, %.3e)' % init_tuple, xy=init_tuple, textcoords='data', fontsize=6)
     last_tuple = (N_iter, loss_values[-1])
-    plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple,
-                 textcoords='data', fontsize=6)
-    plt.subplot(1, 2, 2)
+    plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=6)
+    
+    x_coords = loss_value_step * (np.array(range(len(lambda_1s)))) # has an additional entry than loss_values: initial
+    fig.add_subplot(gs[1, 0])
     plt.plot(x_coords, lambda_1s)
-    plt.xlabel("Iteration", fontsize=6)
-    plt.ylabel("Lambda", fontsize=6)
-    plt.xticks(fontsize=6)
-    plt.yticks(fontsize=6)
-    plt.title("Lambda during Training", fontsize=8)
-    init_tuple = (10, lambda_1s[0])
-    plt.annotate('(%d, %.3f)' % init_tuple, xy=init_tuple,
-                 textcoords='data', fontsize=6)
+    plt.gca().set(xlabel="Iteration", ylabel="Lambda_1", title="Lambda_1 during Training")
+    init_tuple = (0, lambda_1s[0])
+    plt.annotate('(%d, %.3f)' % init_tuple, xy=init_tuple,textcoords='data', fontsize=6)
     last_tuple = (N_iter, lambda_1s[-1])
-    plt.annotate('(%d, %.3f)' % last_tuple, xy=last_tuple,
-                 textcoords='data', fontsize=6)
-    fig.subplots_adjust(wspace=0.3)
-    plt.savefig('./figures2/inverse_1d_loss.pdf')
+    plt.annotate('(%d, %.3f)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=6)
+    
+    fig.add_subplot(gs[1, 1])
+    plt.plot(x_coords, lambda_2s)
+    plt.gca().set(xlabel="Iteration", ylabel="Lambda_2", title="Lambda_2 during Training")
+    init_tuple = (0, lambda_2s[0])
+    plt.annotate('(%d, %.3f)' % init_tuple, xy=init_tuple,textcoords='data', fontsize=6)
+    last_tuple = (N_iter, lambda_2s[-1])
+    plt.annotate('(%d, %.3f)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=6)
+    fig.subplots_adjust(wspace=0.3, hspace=0.35)
+    plt.savefig(f'{dirpath}/inverse_1d_loss.pdf')
 
-    #
     # 2. plot u vs x (exact, prediction) # label training data
-    print("u_preds.shape", u_preds.shape)
-    print("f_preds.shape", f_preds.shape)
+    plt.rcParams['axes.labelpad'] = -1 # default = 4
     fig = plt.figure()
     for i in range(u_preds.shape[0]):
-        ax = plt.subplot(2, 2, i+1)
+        ax = plt.subplot(3, 3, i+1)
         exact_plot, = ax.plot(xt, ut, 'b-', label='Exact')  # tuple unpacking
         pred_plot, = ax.plot(xt, u_preds[i], 'r--', label='Prediction')
-        ax.set_xlabel('$x$', fontsize=6)  # $: mathematical font like latex
-        ax.set_ylabel('$u$', fontsize=6)
-        plt.xticks(fontsize=6)
-        plt.yticks(fontsize=6)
-        ax.set_title('$Iteration = %d$' % ((i+1)*1000), fontsize=8)
-    plt.figlegend(handles=(exact_plot, pred_plot), labels=(
-        'Exact', 'Prediction'), loc='upper center', ncol=2, fontsize=7)  # from last subplot
+        plt.gca().set(xlabel="$x$", ylabel="$u$", title='$Iteration = %d$' % ((i+1)*pred_step))
+    plt.figlegend(handles=(exact_plot, pred_plot), labels=('Exact', 'Prediction'), loc='upper center', ncol=2, fontsize=7)  # from last subplot
     fig.subplots_adjust(wspace=0.3, hspace=0.51)
-    plt.savefig('./figures2/inverse_1d.pdf')
+    plt.savefig(f'{dirpath}/inverse_1d.pdf')
 
-    # with open('myfile.txt', 'w') as f:
-    #     file1.writelines(L)
-
-    # PDE table?
+    infoDict = {
+        'problem':{
+            'pde form': 'u''(x) = lambda_1 * sin(lambda_2 * x)',
+            'pde value': 'u''(x) = 9 * sin(3 * x)',
+            'boundary': 'x in [0, pi]', 
+            'initial condition': 'u(0) = 0',
+            'boundary condition': "u'(pi) = 3",
+            'analytical solution': 'u(x) = - sin(3x)'
+        },
+        'model':{
+            'layers': str(layers),
+            'initial lambda_1': float(lambda0[0]),
+            'final lambda_1': float(lambda_1[0]),
+            'error_lambda_1 percentage': float(error_lambda_1[0]),
+            'initial lambda_2': float(lambda0[1]),
+            'final lambda_2': float(lambda_2[0]),
+            'error_lambda_2 percentage': float(error_lambda_2[0]),
+            'training iteration': N_iter,
+            'error_u': error_u,
+        },
+        'training data':{
+            'initial': (float(x0[0][0]), float(u0[0][0])),
+            'boundary': (float(xb[0][0]), float(u_xb[0][0])) ,
+            'N_train': N_train,
+            'x_train': str(x_train),
+            'u_train': str(u_train),
+            'N_res': N_res,
+            'x_res': str(x_res),
+        },
+        'testing data':{
+            'N_test': N_test,
+            'xt': str(xt),
+            'ut': str(ut)
+        }
+    }
+    with open(f'{dirpath}/info.json', 'w') as f:
+        json.dump(infoDict, f, indent=4)
 
     # TODO: noisy data (to reflect practiacl situation)
     # noise = 0.01  # (to assume some error in observation data)

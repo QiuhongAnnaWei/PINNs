@@ -235,14 +235,14 @@ if __name__ == "__main__":
     loss_values, u_preds, f_preds = ([] for i in range(3))
     N_iter = 9000
     loss_value_step = 10
-    u_pred_step = 1000
+    pred_step = 1000
     for i in range(N_iter):
         loss_value = model.train()
         if (i+1) % loss_value_step == 0:  # wouldn't plot in beginning, but plot at the end
             loss_values.append(loss_value)
             print('Iter: %d, Loss: %.3e, Time: %.2f' %
                   (i+1, loss_value, time.time() - start_time))
-        if (i+1) % u_pred_step == 0:  # start with i=999 and end with i=8999 (last iter)
+        if (i+1) % pred_step == 0:  # start with i=999 and end with i=8999 (last iter)
             # f = u_xx - tf.sin(x) # xt: (50, 1)
             u_pred, f_pred = model.predict(xtest_grid, ytest_grid)
             u_preds.append(u_pred)  # (N_test * N_test, 1)
@@ -298,7 +298,7 @@ if __name__ == "__main__":
     u_mses = [] # 2d array [ [mse1] [mse2] [mse3]]
     for u_pred in u_preds:  # (N_test * N_test, 1)
         u_mses.append(((u_pred - u_test)**2).mean(axis=0)) # append [mse for that iteration]
-    x_coords = u_pred_step * (np.array(range(len(u_preds))) + 1)
+    x_coords = pred_step * (np.array(range(len(u_preds))) + 1)
     u_mses = np.array(u_mses)
     annots = list(zip(x_coords, u_mses.flatten())) # [(1000, 4.748), (2000, 9.394)]
     print("annot:", annots)

@@ -24,11 +24,11 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 class PhysicsInformedNN:
     # Initialize the class
-    def __init__(self, x0, u0, xe, u_xe, xf, layers, lb, ub):
+    def __init__(self, x0, u0, xb, u_xb, xf, layers, lb, ub):
         self.x0 = x0
         self.u0 = u0
-        self.xe = xe
-        self.u_xe = u_xe
+        self.xb = xb
+        self.u_xb = u_xb
         self.xf = xf
         self.lb = lb
         self.ub = ub
@@ -39,13 +39,13 @@ class PhysicsInformedNN:
         # number of cols = 1
         self.x0_tf = tf.placeholder(tf.float32, shape=[None, self.x0.shape[1]]) # (1, 1)
         self.u0_tf = tf.placeholder(tf.float32, shape=[None, self.u0.shape[1]]) # (1, 1)
-        self.xe_tf = tf.placeholder(tf.float32, shape=[None, self.xe.shape[1]]) # (1, 1)
-        self.u_xe_tf = tf.placeholder(tf.float32, shape=[None, self.u_xe.shape[1]]) # (1, 1)
+        self.xb_tf = tf.placeholder(tf.float32, shape=[None, self.xb.shape[1]]) # (1, 1)
+        self.u_xb_tf = tf.placeholder(tf.float32, shape=[None, self.u_xb.shape[1]]) # (1, 1)
         self.xf_tf = tf.placeholder(tf.float32, shape=[None, self.xf.shape[1]]) # (30, 1)
 
         # tf Graphs: u, u_x, f = net_all(x)
         self.u0_pred, _ , _ = self.net_all(self.x0_tf)
-        _ , self.u_xe_pred, _ = self.net_all(self.xe_tf)
+        _ , self.u_xb_pred, _ = self.net_all(self.xb_tf)
         self.uf_pred, self.u_xf_pred, self.f_pred = self.net_all(self.xf_tf) # used in predict (only call net_all once)
         
         ## u''(x) = sin(x), x in [0, pi]
@@ -53,7 +53,7 @@ class PhysicsInformedNN:
         ## u'(pi) = 1
         # Loss: initial + boundary + PDE
         self.loss = tf.reduce_mean(tf.square(self.u0_tf - self.u0_pred)) + \
-                    tf.reduce_mean(tf.square(self.u_xe_tf - self.u_xe_pred)) + \
+                    tf.reduce_mean(tf.square(self.u_xb_tf - self.u_xb_pred)) + \
                     tf.reduce_mean(tf.square(self.f_pred)) # f_pred = u_xx - sin(x) = 0
                     # td.reduce_mean: computes the mean of elements across dimensions of a tensor
 
@@ -111,7 +111,7 @@ class PhysicsInformedNN:
         
     def train(self): # one iteration: uses all training data from tf_dict and updates weights and biases
         tf_dict = {self.x0_tf: self.x0, self.u0_tf: self.u0,
-                   self.xe_tf: self.xe, self.u_xe_tf: self.u_xe,
+                   self.xb_tf: self.xb, self.u_xb_tf: self.u_xb,
                    self.xf_tf: self.xf}
         self.sess.run(self.train_op_Adam, tf_dict) # feeding training examples during training and running the minimization Op of self.loss
         loss_value = self.sess.run(self.loss, tf_dict)
@@ -148,11 +148,16 @@ if __name__ == "__main__":
     ## PART 2：randomly picking/preping the training set from full analytical solution for uniform grid
     # people perfer deterministic way now: want to make sure points cover whole domain/dense everywhere
     # random: better for complex geometrical problem
+    #initial condition
     x0 = np.array([[0]])
     u0 = np.array([[0]])
-    xe = np.array([[np.pi]])
-    u_xe = np.array([[1]])
-    N_f = 30 # Number of collocation points
+
+    # boundary condition
+    xb = np.array([[np.pi]])
+    u_xb = np.array([[1]])
+
+    # collocation points for enforcing f=0
+    N_f = 30
     # idx = np.random.choice(x.shape[0], N_f, replace=False) 
     # x_f = x[idx,:] # N_f rows from x
     # u_f = u[idx,:] # corresponding N_f rows from u (matching sin(x))
@@ -160,7 +165,7 @@ if __name__ == "__main__":
 
     ###########################  
     ## PART 3: forming the network, training, predicting
-    model = PhysicsInformedNN(x0, u0, xe, u_xe, xf, layers, lb, ub)
+    model = PhysicsInformedNN(x0, u0, xb, u_xb, xf, layers, lb, ub)
              
     N_test = 50
     xt = np.reshape(np.linspace(0, np.pi, N_test), (-1, 1)) # [[0] [pi/2] [pi]]
