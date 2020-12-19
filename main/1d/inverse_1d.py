@@ -3,19 +3,16 @@
 """
 # Inverse: given observed data of u(t, x) -> model/pde parameters λ
 
+import time, sys, os, json
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.gridspec as gridspec
 from mpl_toolkits.mplot3d import Axes3D
-import time
 from pyDOE import lhs
 from scipy.interpolate import griddata
 import scipy.io
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
-import sys
-import json
-import os
 sys.path.insert(0, '../../Utilities/')  # for plotting
 
 # from plotting import newfig, savefig
@@ -25,22 +22,21 @@ sys.path.insert(0, '../../Utilities/')  # for plotting
 
 
 class PhysicsInformedNN:
-    # Initialize the class (x_train, u_train, layers)
-    def __init__(self, x0, u0, xb, u_xb, xo, uo, xr, lambda0, layers):
+    def __init__(self, x0, u0, xb, u_xb, xo, uo, xf, lambda0, layers, lowerbound, upperbound):
         self.x0 = x0
         self.u0 = u0
         self.xb = xb
         self.u_xb = u_xb
         self.xo = xo
         self.uo = uo
-        self.xr = xr
+        self.xf = xf
 
-        self.lowerbound = np.array([0])
-        self.upperbound = np.array([np.pi])
+        self.lowerbound = lowerbound
+        self.upperbound = upperbound
         self.layers = layers
+
         # Initialize NN
         self.weights, self.biases = self.initialize_NN(layers)
-
         self.lambda_1 = tf.Variable([lambda0[0]], dtype=tf.float32)
         self.lambda_2 = tf.Variable([lambda0[1]], dtype=tf.float32)
 
@@ -51,13 +47,13 @@ class PhysicsInformedNN:
         self.u_xb_tf = tf.placeholder(tf.float32, shape=[None, self.u_xb.shape[1]])  # (1, 1)
         self.xo_tf = tf.placeholder(tf.float32, shape=[None, self.xo.shape[1]])  # N_train x 1
         self.uo_tf = tf.placeholder(tf.float32, shape=[None, self.uo.shape[1]])  # N_train x 1
-        self.xr_tf = tf.placeholder(tf.float32, shape=[None, self.xr.shape[1]])  # N_res x 1
+        self.xf_tf = tf.placeholder(tf.float32, shape=[None, self.xf.shape[1]])  # N_f x 1
 
-        # tf Graphs: return u, u_x, f
+        # tf Graphs: u, u_x, f = net_all(x)
         self.u0_pred, _, _ = self.net_all(self.x0_tf)
         _, self.u_xb_pred, _ = self.net_all(self.xb_tf)
         self.uo_pred, _, _ = self.net_all(self.xo_tf)
-        _, _, self.f_pred = self.net_all(self.xr_tf)
+        _, _, self.f_pred = self.net_all(self.xf_tf)
 
         # Loss: initial + boundary + observed data + PDE
         self.loss = tf.reduce_mean(tf.square(self.u0_tf - self.u0_pred)) + \
@@ -67,10 +63,11 @@ class PhysicsInformedNN:
         # tf.reduce_mean: computes the mean of elements across dimensions of a tensor
 
         # Optimizers:
-        # return a minimization Op (a graph node that performs computation on tensors) -> updates lambdaxxx
+        # return a minimization Op (a graph node that performs computation on tensors) -> updates weights, biases, lambdas
         self.train_op_Adam = tf.train.AdamOptimizer(learning_rate=0.001).minimize(self.loss)
         # NOTE: default: learning_rate=0.001 (typically 0.001 is the max, can make smaller)
-        # tf session: initiates a tf Graph(defines computations) in which tensors are processed through operations + allocates resources and holds intermediate values
+        
+        # tf session: initiates a tf Graph (defines computations) that processes tensors through operations + allocates resources + holds intermediate values
         self.sess = tf.Session()
         init = tf.global_variables_initializer() # variables now hold the values from declarations: tf.Variable(tf.zeros(...)), tf.Variable(tf.random_normal(...)), etc
         self.sess.run(init)  # required to initialize the variables
@@ -89,7 +86,7 @@ class PhysicsInformedNN:
 
     def xavier_init(self, size):
         # https://towardsdatascience.com/weight-initialization-in-neural-networks-a-journey-from-the-basics-to-kaiming-954fb9b47c79
-        # Want activation outputs of each layer to have stddev around 1 -> repeat matrix mult across as many network layers as want, without activations exploding or vanishing
+        # Want each layer's activation outputs to have stddev around 1 -> repeat matrix mult across as many layers without activations exploding or vanishing
         in_dim = size[0]
         out_dim = size[1]
         xavier_stddev = np.sqrt(2/(in_dim + out_dim))
@@ -119,18 +116,17 @@ class PhysicsInformedNN:
         f = u_xx - lambda_1 * tf.sin(lambda_2 * x)
         return u, u_x, f
 
-    def train(self):  # one iteration: uses all training data from tf_dict and updates lambda
+    def train(self):  # one iteration: uses all training data from tf_dict and updates weights, biases, lambdas
         tf_dict = {self.x0_tf: self.x0, self.u0_tf: self.u0,
                    self.xb_tf: self.xb, self.u_xb_tf: self.u_xb,
-                   self.xo_tf: self.xo, self.uo_tf: self.uo, self.xr_tf: self.xr}
+                   self.xo_tf: self.xo, self.uo_tf: self.uo, self.xf_tf: self.xf}
         # feeding training examples during training and running the minimization Op of self.loss
         self.sess.run(self.train_op_Adam, tf_dict)
-        # self.lambda_1 and self.lambda_2 do not need tf_dict
-        loss_value, lambda_1, lambda_2 = self.sess.run([self.loss, self.lambda_1, self.lambda_2], tf_dict)
+        loss_value, lambda_1, lambda_2 = self.sess.run([self.loss, self.lambda_1, self.lambda_2], tf_dict) # lambda_1/2 do not need tf_dict
         return loss_value, lambda_1, lambda_2
 
     def predict(self, x):
-        tf_dict = {self.xo_tf: x, self.xr_tf: x}  # no need for u
+        tf_dict = {self.xo_tf: x, self.xf_tf: x}  # no need for u
         # want to use the values in Session
         u, f = self.sess.run([self.uo_pred, self.f_pred], tf_dict)
         return u, f
@@ -142,43 +138,57 @@ if __name__ == "__main__":
         # NOTE: to uniquely identify lambda, typically need boundary condition
     # u(0) = 0
     # u'(pi) = 3, u'(x) = - 3 cos(3x)
-        ## NOTE: analytically given initial and boundary -> used in loss (identical to forward implementation)
+        ## NOTE: given initial and boundary -> used in loss (identical to forward implementation)
     # analytical solution: u(x) = - sin(3x)
+
+    # global settings for all subplots 
+    plt.rcParams['xtick.labelsize'] = 6
+    plt.rcParams['ytick.labelsize'] = 6
+    plt.rcParams['axes.labelsize'] = 7
+    plt.rcParams['axes.titlesize'] = 8
+
     ###########################
     ## PART 1: initialization
+    
     # 5-layer deep NN with 100 neurons/layer & hyperbolic tangent act. func.
     layers = [1, 20, 20, 20, 1]
 
+    # Domain bounds
+    lowerbound = np.array([0])
+    upperbound = np.array([np.pi])
+
     ###########################
-    ## PART 2：training data
+    ## PART data
     # initial condition
-    x0 = np.array([[0]])
+    x0 = np.array([[lowerbound[0]]])
     u0 = np.array([[0]])
 
     # boundary condition
-    xb = np.array([[np.pi]])
+    xb = np.array([[upperbound[0]]])
     u_xb = np.array([[3]])
 
     # observed u based on analytical solution
-    N_train = 5
-    x_train = np.reshape(np.linspace(0.2, np.pi-0.2, N_train), (-1, 1))
-    # x_train = np.array([[1.1], [2.1]])
-    u_train = -1 * np.sin(3 * x_train)
+    N_observed = 5
+    xo = np.reshape(np.linspace(lowerbound[0]+0.2, upperbound[0]-0.2, N_observed), (-1, 1))
+    # xo = np.array([[1.1], [2.1]])
+    uo = -1 * np.sin(3 * xo)
 
     # collocation points for enforcing f=0
     # NOTE: separate from observed data: want f/residual = 0 everywhere
-    N_res = 30
-    x_res = np.reshape(np.linspace(0, np.pi, N_res), (-1, 1)) # collocation points
+    N_f = 30
+    xf = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_f), (-1, 1)) # collocation points
+
+    # testing data
+    N_test = 50
+    xt = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_test), (-1, 1))  # [[0] [pi/2] [pi]]
+    ut = -1 * np.sin(3 * xt)
 
     # initial values for lambdas
     lambda0 = np.array([5, 2])
+
     ###########################
     ## PART 3: forming the network, training, predicting
-    model = PhysicsInformedNN(x0, u0, xb, u_xb, x_train, u_train, x_res, lambda0, layers)
-
-    N_test = 50
-    xt = np.reshape(np.linspace(0, np.pi, N_test), (-1, 1))  # [[0] [pi/2] [pi]]
-    ut = -1 * np.sin(3 * xt)
+    model = PhysicsInformedNN(x0, u0, xb, u_xb, xo, uo, xf, lambda0, layers, lowerbound, upperbound)
 
     start_time = time.time()
     dirpath = f'./1d/inverse_1d_figures/{start_time}' # where figures are stored
@@ -200,34 +210,27 @@ if __name__ == "__main__":
                   (i+1, loss_value, lambda_1, lambda_2, time.time() - start_time))
         if (i+1) % pred_step == 0:  # start with i=999 and end with i=3999 (last iter)
             u_pred, f_pred = model.predict(xt)
-            u_preds.append(u_pred) # (50, 1)
-            f_preds.append(f_pred) # (50, 1)
+            u_preds.append(u_pred) # (N_test, 1)
+            f_preds.append(f_pred) # (N_test, 1)
             # print('     u_pred: %.3e, f_pred: %.3e' % (u_pred , f_pred)
     u_preds = np.array(u_preds)
     f_preds = np.array(f_preds)
     u_pred, f_pred = model.predict(xt)
-    # print("loss_values:", loss_values)  # [-3:]
-    # print("u_preds:", u_preds)
+    print("Initial lambda_1: %.5f, Final lambda_1: %.5f" % (lambda0[0], lambda_1))
+    print("Initial lambda_2: %.5f, Final lambda_2: %.5f" % (lambda0[1], lambda_2))
     # print('Training time: %.4f' % (time.time() - start_time))
-    # lambda_1_value = model.sess.run(model.lambda_1)
-    # lambda_2_value = model.sess.run(model.lambda_2)
-    print("Initial lambda_1: %.5f, Final lambda_1: %.5f | Initial lambda_2: %.5f, Final lambda_2: %.5f" %
-          (lambda0[0], lambda_1, lambda0[1], lambda_2))
-    # NOTE: what is important is the function u_pred resembles, not so much the parameters (weigths & biases)
+    # NOTE: what is important is the function u_pred resembles, not so much the parameters (weights & biases)
     # NOTE: if no analytical solution, find numerical method/other method to verify -> directly use network
+    
     ###########################
     ## PART 4: calculating errors
     error_u = np.linalg.norm(u_pred - ut, 2) / np.linalg.norm(ut, 2) # scalar
     error_lambda_1 = np.abs(lambda_1 - 9)/9 * 100  # Ground truth: lambda_1=9 # 1d np array
     error_lambda_2 = np.abs(lambda_2 - 3)/3 * 100  # Ground truth: lambda_2=3 # 1d np array
-    print('Error u: %e; | Error lambda_1: %.5f%% | Error lambda_2: %.5f%%' % (error_u, error_lambda_1, error_lambda_2))
+    print('Error u: %e | Error lambda_1: %.5f%% | Error lambda_2: %.5f%%' % (error_u, error_lambda_1, error_lambda_2))
+    
     ###########################
     ## PART 5: Plotting
-    # global settings for all subplots 
-    plt.rcParams['xtick.labelsize'] = 6
-    plt.rcParams['ytick.labelsize'] = 6
-    plt.rcParams['axes.labelsize'] = 7
-    plt.rcParams['axes.titlesize'] = 8
 
     # 1. loss vs. iteration, lambda_1 vs iteration, lambda_2 vs iteration
     fig = plt.figure(figsize=(8, 4.8))
@@ -257,10 +260,11 @@ if __name__ == "__main__":
     plt.annotate('(%d, %.3f)' % init_tuple, xy=init_tuple,textcoords='data', fontsize=6)
     last_tuple = (N_iter, lambda_2s[-1])
     plt.annotate('(%d, %.3f)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=6)
+    
     fig.subplots_adjust(wspace=0.3, hspace=0.35)
     plt.savefig(f'{dirpath}/inverse_1d_loss.pdf')
 
-    # 2. plot u vs x (exact, prediction) # label training data
+    # 2. plot u vs x (exact, prediction)
     plt.rcParams['axes.labelpad'] = -1 # default = 4
     fig = plt.figure()
     for i in range(u_preds.shape[0]):
@@ -276,30 +280,30 @@ if __name__ == "__main__":
         'problem':{
             'pde form': 'u''(x) = lambda_1 * sin(lambda_2 * x)',
             'pde value': 'u''(x) = 9 * sin(3 * x)',
-            'boundary': 'x in [0, pi]', 
+            'boundary (x)': [float(lowerbound[0]),float(upperbound[0])], 
             'initial condition': 'u(0) = 0',
             'boundary condition': "u'(pi) = 3",
             'analytical solution': 'u(x) = - sin(3x)'
         },
         'model':{
             'layers': str(layers),
+            'training iteration': N_iter,
             'initial lambda_1': float(lambda0[0]),
             'final lambda_1': float(lambda_1[0]),
             'error_lambda_1 percentage': float(error_lambda_1[0]),
             'initial lambda_2': float(lambda0[1]),
             'final lambda_2': float(lambda_2[0]),
             'error_lambda_2 percentage': float(error_lambda_2[0]),
-            'training iteration': N_iter,
-            'error_u': error_u,
-        },
+            'error_u': error_u
+        }, 
         'training data':{
             'initial': (float(x0[0][0]), float(u0[0][0])),
             'boundary': (float(xb[0][0]), float(u_xb[0][0])) ,
-            'N_train': N_train,
-            'x_train': str(x_train),
-            'u_train': str(u_train),
-            'N_res': N_res,
-            'x_res': str(x_res),
+            'N_observed': N_observed,
+            'xo': str(xo),
+            'uo': str(uo),
+            'N_f': N_f,
+            'xf': str(xf),
         },
         'testing data':{
             'N_test': N_test,

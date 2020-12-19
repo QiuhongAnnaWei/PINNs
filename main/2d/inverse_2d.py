@@ -67,7 +67,7 @@ class PhysicsInformedNN:
         self.xf_grid_tf = tf.placeholder(tf.float32, shape=[None, self.xf_grid.shape[1]])
         self.yf_grid_tf = tf.placeholder(tf.float32, shape=[None, self.yf_grid.shape[1]])
 
-        # self.lr_tf = tf.placeholder(tf.float32)
+        self.lr_tf = tf.placeholder(tf.float32)
 
         # tf Graphs: u, f = net_all(x, y)
         self.ul_pred, _ = self.net_all(self.x0_tf, self.yb_tf)
@@ -95,7 +95,7 @@ class PhysicsInformedNN:
 
         # Optimizers:
         # return a minimization Op (a graph node that performs computation on tensors) -> updates weights, biases, lambdas
-        self.train_op_Adam = tf.train.AdamOptimizer().minimize(self.loss)
+        self.train_op_Adam = tf.train.AdamOptimizer(learning_rate = self.lr_tf).minimize(self.loss)
 
         # tf session: initiates a tf Graph (defines computations) that processes tensors through operations + allocates resources + holds intermediate values
         self.sess = tf.Session()
@@ -154,13 +154,14 @@ class PhysicsInformedNN:
     def callback(self, loss):
         print('Loss:', loss)
 
-    def train(self):  # one iteration: uses all training data from tf_dict and updates weights, biases, lambdas
+    def train(self, lr):  # one iteration: uses all training data from tf_dict and updates weights, biases, lambdas
         tf_dict = { self.ul_tf: self.ul, self.x0_tf: self.x0, self.yb_tf: self.yb,
                     self.ur_tf: self.ur, self.xe_tf: self.xe,
                     self.ub_tf: self.ub, self.xb_tf: self.xb, self.y0_tf: self.y0,
                     self.ut_tf: self.ut, self.ye_tf: self.ye,
                     self.uo_tf: self.uo, self.xo_grid_tf: self.xo_grid, self.yo_grid_tf: self.yo_grid,
-                    self.xf_grid_tf: self.xf_grid, self.yf_grid_tf: self.yf_grid }
+                    self.xf_grid_tf: self.xf_grid, self.yf_grid_tf: self.yf_grid,
+                    self.lr_tf: lr}
         # feeding training examples during training and running the minimization Op of self.loss
         self.sess.run(self.train_op_Adam, tf_dict)
         loss_value, lambda_1 = self.sess.run([self.loss, self.lambda_1], tf_dict)
@@ -287,11 +288,13 @@ if __name__ == "__main__":
     loss_value_step = 50
     pred_step = 5000
     for i in range(N_iter):
-        loss_value, lambda_1= model.train() # from last iteration
+        lr = 10**-3 * 2**(-i/10000)
+        loss_value, lambda_1= model.train(lr) # from last iteration
         if (i+1) % loss_value_step == 0:  # start with i=9 and end with i=8999 (last iter)
             loss_values.append(loss_value)
             lambda_1s.append(lambda_1)
-            print('Iter: %d, Loss: %.3e, Lambda_1: %.5f, Time: %.2f' % (i+1, loss_value, lambda_1, time.time() - start_time))
+            print('Iter: %d, Loss: %.3e, Lambda_1: %.5f, Time: %.2f, Learning Rate: %.5f' % (i+1, loss_value, lambda_1, time.time() - start_time, lr))
+            # TODO: mse perhaps
         if (i+1) % pred_step == 0:  # start with i=999 and end with i=8999 (last iter)
             u_pred, f_pred = model.predict(xtest_grid, ytest_grid)
             u_preds.append(u_pred)  # (N_test * N_test, 1)
@@ -352,21 +355,13 @@ if __name__ == "__main__":
     for annot in annots[0:1] + annots[-1:]: # first and last
         plt.annotate('(%d, %.3e)' % annot, xy=annot, textcoords='data', fontsize=6)
     plt.gca().set(xlabel='Iteration', ylabel='MSE of u', title='MSE of u during Training')
-    
-    fig.add_subplot(gs[1, 1])
-    res_means = [] # 2d array [[res_mean1] [res_mean2] [res_mean3]]
-    for f_pred in f_preds:
-        res_means.append([np.mean(np.abs(f_pred))]) # mean across N_test * N_test |f_pred|
-    res_means = np.array(res_means)
-    annots = list(zip(x_coords, res_means.flatten())) # [(1000, 0.06), (2000, 0.03)]
-    plt.semilogy(x_coords, res_means, '.-')
-    for annot in annots[0:1] + annots[-1:]: # first and last
-        plt.annotate('(%d, %.3e)' % annot, xy=annot, textcoords='data', fontsize=6)
-    plt.gca().set(xlabel='Iteration', ylabel='Residual |f| Mean', title='Residual Mean during Training')
 
     fig.subplots_adjust(wspace=0.3, hspace=0.51)
     plt.savefig(f'{dirpath}/inverse_2d_loss.pdf')
     plt.close(fig)
+
+    # TODO: change graph (remove res_means)
+    # TODO: train til convergence
 
     # 3. u vs (x, y): surface
     fig = plt.figure()
@@ -401,7 +396,8 @@ if __name__ == "__main__":
             'initial lambda_1': float(lambda0[0]),
             'final lambda_1': float(lambda_1[0]),
             'error_lambda_1 percentage': float(error_lambda_1[0]),
-            'error_u': error_u
+            'error_u': error_u,
+            'training_time': training_time
         },
         'training data':{
             'N_b': N_b,
@@ -423,3 +419,7 @@ if __name__ == "__main__":
     }
     with open(f'{dirpath}/info.json', 'w') as f:
         json.dump(infoDict, f, indent=4)
+    with open(f'{dirpath}/lambda_1s.json', 'w') as f:
+        json.dump(lambda_1.tolist(), f)
+    with open(f'{dirpath}/loss_values.json', 'w') as f:
+        json.dump(loss_values.tolist(), f)

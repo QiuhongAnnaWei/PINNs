@@ -3,17 +3,16 @@
 """
 # Forward: given model/pde parameters λ -> u(t, x)
 
+import time, sys, os, json
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.gridspec as gridspec
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
-import time
 from pyDOE import lhs
 from scipy.interpolate import griddata
 import scipy.io
 import numpy as np
 import tensorflow as tf
-import sys, os
 sys.path.insert(0, '../../Utilities/')  # for plotting
 
 # from plotting import newfig, savefig
@@ -24,13 +23,13 @@ sys.path.insert(0, '../../Utilities/')  # for plotting
 
 class PhysicsInformedNN:
     # Initialize the class
-    def __init__(self, xb, yb, ul, ur, ub, ut, xf_grid, yf_grid, layers, lowerbound, upperbound):
+    def __init__(self, xb, yb, x0, xe, y0, ye, ul, ur, ub, ut, xf_grid, yf_grid, layers, lowerbound, upperbound):
         self.xb = xb
         self.yb = yb
-        self.x0 = 0 * yb + lowerbound[0]  # left edge
-        self.xe = 0 * yb + upperbound[0]  # right edge
-        self.y0 = 0 * xb + lowerbound[1]  # bottom edge
-        self.ye = 0 * xb + upperbound[1]  # top edge
+        self.x0 = x0
+        self.xe = xe
+        self.y0 = y0
+        self.ye = ye
         self.ul = ul
         self.ur = ur
         self.ub = ub
@@ -83,14 +82,14 @@ class PhysicsInformedNN:
             tf.reduce_mean(tf.square(self.ur_tf - self.ur_pred)) + \
             tf.reduce_mean(tf.square(self.ub_tf - self.ub_pred)) + \
             tf.reduce_mean(tf.square(self.ut_tf - self.ut_pred)) + \
-            tf.reduce_mean(tf.square(self.f_pred))  # f_pred = u_xx + u_yy = 0
-        # td.reduce_mean: computes the mean of elements across dimensions of a tensor
+            tf.reduce_mean(tf.square(self.f_pred))  # f = u_xx + u_yy = 0
+        # tf.reduce_mean: computes the mean of elements across dimensions of a tensor
 
         # Optimizers:
         # return a minimization Op (a graph node that performs computation on tensors) -> updates weights and biases
         self.train_op_Adam = tf.train.AdamOptimizer().minimize(self.loss)
 
-        # tf session: initiates a tf Graph(defines computations) in which tensors are processed through operations + allocates resources and holds intermediate values
+        # tf session: initiates a tf Graph (defines computations) that processes tensors through operations + allocates resources + holds intermediate values
         self.sess = tf.Session()
         # variables now hold the values from declarations: tf.Variable(tf.zeros(...)), tf.Variable(tf.random_normal(...)), etc
         init = tf.global_variables_initializer()
@@ -104,13 +103,12 @@ class PhysicsInformedNN:
             # tf.Variable: for trainable variables/mutable tensor values that persist across multiple sesssion.run()
             # https://towardsdatascience.com/understanding-fundamentals-of-tensorflow-program-and-why-it-is-necessary-94cf5b60e255
             weights.append(self.xavier_init(size=[layers[l], layers[l+1]]))
-            biases.append(tf.Variable(
-                tf.zeros([1, layers[l+1]], dtype=tf.float32), dtype=tf.float32))  # all zeros
+            biases.append(tf.Variable(tf.zeros([1, layers[l+1]], dtype=tf.float32), dtype=tf.float32))  # all zeros
         return weights, biases
 
     def xavier_init(self, size):
         # https://towardsdatascience.com/weight-initialization-in-neural-networks-a-journey-from-the-basics-to-kaiming-954fb9b47c79
-        # Want activation outputs of each layer to have stddev around 1 -> repeat matrix mult across as many network layers as want, without activations exploding or vanishing
+        # Want each layer's activation outputs to have stddev around 1 -> repeat matrix mult across as many layers without activations exploding or vanishing
         in_dim = size[0]
         out_dim = size[1]
         xavier_stddev = np.sqrt(2/(in_dim + out_dim))
@@ -119,9 +117,8 @@ class PhysicsInformedNN:
         return tf.Variable(tf.truncated_normal([in_dim, out_dim], stddev=xavier_stddev), dtype=tf.float32)
 
     def neural_net(self, X, weights, biases):
-        num_layers = len(weights) + 1  # 6 in this case
-        # Initializing first input: mapping to [-1, 1]
-        H = 2.0*(X - self.lowerbound)/(self.upperbound - self.lowerbound) - 1.0
+        num_layers = len(weights) + 1
+        H = 2.0*(X - self.lowerbound)/(self.upperbound - self.lowerbound) - 1 # Initializing first input: mapping to [-1, 1]
         for l in range(0, num_layers-2):
             W = weights[l]
             b = biases[l]
@@ -159,19 +156,48 @@ class PhysicsInformedNN:
         loss_value = self.sess.run(self.loss, tf_dict)
         return loss_value
 
-    def predict(self, x, y):
-        tf_dict = {self.xf_grid_tf: x, self.yf_grid_tf: y}
+    def predict(self, x_grid, y_grid): # tf.concat([x, y], 1)
+        tf_dict = {self.xf_grid_tf: x_grid, self.yf_grid_tf: y_grid}
         u, f = self.sess.run([self.uf_pred, self.f_pred], tf_dict)
         # self.uf_pred, self.f_pred = self.net_all(self.xf_grid_tf, self.yf_grid_tf)
         return u, f
 
 
+def axisToGrid(x, y): # [[0] [0.5] [1]] (N, 1)
+    x_mesh, y_mesh = np.meshgrid(x, y) # [[0 0.5 1] [0 0.5 1] [0 0.5 1]], [[0 0 0] [0.5 0.5 0.5] [1 1 1]] (N, N)
+    x_grid = np.reshape(x_mesh.flatten(), (-1, 1)) # [[0] [0.5] [1] [0] [0.5] [1] [0] [0.5] [1]] # (N * N, 1)
+    y_grid = np.reshape(y_mesh.flatten(), (-1, 1)) # [[0] [0] [0] [0.5] [0.5] [0.5] [1] [1] [1]] # (N * N, 1)
+    return x_mesh, y_mesh, x_grid, y_grid # net_all: X = tf.concat([x,y],1)
+
+def countourPlot(xtest_mesh, ytest_mesh, u_test, u_pred, N_test, figName):
+    fig = plt.figure()
+    gs = gridspec.GridSpec(nrows=2, ncols=3, figure=fig, width_ratios=[6, 6, 1], height_ratios=[1, 1])
+    ax = fig.add_subplot(gs[0, 0])
+    cset1 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_test, (N_test, N_test)), levels=30, cmap='winter')
+    plt.gca().set(xlabel='$x$', ylabel='$y$', title='Exact') # $: mathematical font like latex
+
+    ax = fig.add_subplot(gs[0, 1])
+    cset2 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_pred, (N_test, N_test)), levels=30, cmap='winter')
+    plt.gca().set(xlabel='$x$', ylabel='$y$', title='Prediction')
+
+    ax = fig.add_subplot(gs[0, 2])
+    fig.colorbar(cset2, cax=ax)
+
+    ax = fig.add_subplot(gs[1, 0:2])
+    cset3 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(np.abs(u_pred-u_test), (N_test, N_test)), levels=30, cmap='autumn')
+    plt.gca().set(xlabel='$x$', ylabel='$y$', title='|Prediction - Exact|')
+    ax = fig.add_subplot(gs[1, 2])
+    fig.colorbar(cset3, cax=ax)
+
+    fig.subplots_adjust(wspace=0.3, hspace=0.3)
+    plt.savefig(f'{dirpath}/{figName}.pdf')
+
 if __name__ == "__main__":
-    # u_xx + u_yy = 0, x in [0, 1] & y in [0, 1]
-    # u(0, y) = -y^2
-    # u(1, y) =  1 - y^2 + 3y
-    # u(x, 0) = x^2
-    # u(x, 1) = x^2 - 1 + 3x
+    # u_xx + u_yy = 0, x in [0, 1], y in [0, 1]
+    # u(0, y) = -y^2            ## left
+    # u(1, y) =  1 - y^2 + 3y   ## right
+    # u(x, 0) = x^2             ## bottom
+    # u(x, 1) = x^2 - 1 + 3x    ## top
     # analytical solution: u(x, y) = x^2 - y^2 + 3xy
     ## u_x(0, y)
     # TODO: try a mix of edges + boundary
@@ -186,47 +212,46 @@ if __name__ == "__main__":
     ###########################
     ## PART 1: setting parameters and getting accurate data for evaluation
 
+    # 4-layer deep NN with 20 neurons/layer & hyperbolic tangent act. func.
+    layers = [2, 50, 50, 50, 1]
+
     # Domain bounds
     lowerbound = np.array([0, 0])
     upperbound = np.array([1, 1])
 
-    # 4-layer deep NN with 20 neurons/layer & hyperbolic tangent act. func.
-    layers = [2, 50, 50, 50, 1]
-
     ###########################
     ## PART 2：setting training and testing data from full analytical solution for uniform grid
 
-    # boundary data (t) ftom file -> used in training
+    # boundary condition
     N_b = 20
     xb = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_b), (-1, 1)) # [[0] [0.5] [1]]
     yb = np.reshape(np.linspace(lowerbound[1], upperbound[1], N_b), (-1, 1))
-    ul = -1 * yb**2
-    ur = 1 - yb**2 + 3 * yb
-    ub = xb**2
-    ut = xb**2 - 1 + 3 * xb
+    x0 = 0 * yb + lowerbound[0] # left edge # [[0] [0] [0]]
+    xe = 0 * yb + upperbound[0] # right edge
+    y0 = 0 * xb + lowerbound[1] # bottom edge
+    ye = 0 * xb + upperbound[1] # top edge
+    ul = -1 * yb**2 # u(0, y)
+    ur = 1 - yb**2 + 3 * yb # u(1, y
+    ub = xb**2 # u(x, 0)
+    ut = xb**2 - 1 + 3 * xb # u(x, 1)
 
-    # collocation points for enforcing f=0 from uniform grid -> used in training
-    # NOTE: want PDE satisfied at positions arbitrarily close to boundary -> add boundary points to collocation points
-    N_f = 20 
-    xf = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_f), (-1, 1)) # [[0] [0.5] [1]] (N_f, 1)
-    yf = np.reshape(np.linspace(lowerbound[1], upperbound[1], N_f), (-1, 1)) # [[0] [0.5] [1]] (N_f, 1)
-    xf_mesh, yf_mesh = np.meshgrid(xf, yf) # [[0 0.5 1] [0 0.5 1] [0 0.5 1]], [[0 0 0] [0.5 0.5 0.5] [1 1 1]]
-    # shape: (N_f * N_f, 1) because in net_all: X = tf.concat([x,y],1)
-    xf_grid = np.reshape(xf_mesh.flatten(), (-1, 1)) # [[0] [0.5] [1] [0] [0.5] [1] [0] [0.5] [1]]
-    yf_grid = np.reshape(yf_mesh.flatten(), (-1, 1)) # [[0] [0] [0] [0.5] [0.5] [0.5] [1] [1] [1]]
+    # collocation points for enforcing f=0 from uniform grid
+    # NOTE: want PDE satisfied at positions arbitrarily close to boundary -> include boundary points in collocation points
+    N_f = 20 # along one axis
+    xf = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_f), (-1, 1)) # (N_f, 1)
+    yf = np.reshape(np.linspace(lowerbound[1], upperbound[1], N_f), (-1, 1)) # (N_f, 1)
+    _, _, xf_grid, yf_grid = axisToGrid(xf, yf) # (N_f * N_f, 1)
 
     # testing data
     N_test = 50  # NOTE: different from collocation points
     xtest = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_test), (-1, 1))  # (N_test, 1)
     ytest = np.reshape(np.linspace(lowerbound[1], upperbound[1], N_test), (-1, 1))  # (N_test, 1)
-    xtest_mesh, ytest_mesh = np.meshgrid(xtest, ytest)  # (N_test, N_test)
-    xtest_grid = np.reshape(xtest_mesh.flatten(),(-1, 1))  # (N_test * N_test, 1)
-    ytest_grid = np.reshape(ytest_mesh.flatten(), (-1, 1))  # (N_test * N_test, 1)
+    xtest_mesh, ytest_mesh, xtest_grid, ytest_grid = axisToGrid(xtest, ytest) # # (N_test, N_test), (N_test * N_test, 1)
     u_test = xtest_grid**2 - ytest_grid**2 + 3 * xtest_grid * ytest_grid  # (N_test * N_test, 1)
 
     ###########################
     ## PART 3: forming the network, training, predicting
-    model = PhysicsInformedNN(xb, yb, ul, ur, ub, ut,xf_grid, yf_grid, layers, lowerbound, upperbound)
+    model = PhysicsInformedNN(xb, yb, x0, xe, y0, ye, ul, ur, ub, ut, xf_grid, yf_grid, layers, lowerbound, upperbound)
 
     start_time = time.time()
     dirpath = f'./2d/forward_2d_figures/{start_time}' # where figures are stored
@@ -237,8 +262,8 @@ if __name__ == "__main__":
     loss_value_step = 10
     pred_step = 1000
     for i in range(N_iter):
-        loss_value = model.train()
-        if (i+1) % loss_value_step == 0:  # wouldn't plot in beginning, but plot at the end
+        loss_value = model.train() # from last iteration
+        if (i+1) % loss_value_step == 0:  # start with i=9 and end with i=8999 (last iter)
             loss_values.append(loss_value)
             print('Iter: %d, Loss: %.3e, Time: %.2f' %
                   (i+1, loss_value, time.time() - start_time))
@@ -247,39 +272,24 @@ if __name__ == "__main__":
             u_pred, f_pred = model.predict(xtest_grid, ytest_grid)
             u_preds.append(u_pred)  # (N_test * N_test, 1)
             f_preds.append(f_pred)  # (N_test * N_test, 1)
-            fig = plt.figure()
-            ax = plt.subplot(1,2,1)
-            cset1 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_test, (N_test, N_test)), levels=30, cmap='winter')
-            plt.gca().set(xlabel='$x$', ylabel='$y$', title='Exact')
-            ax = plt.subplot(1,2,2)
-            cset2 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_pred, (N_test, N_test)), levels=30, cmap='winter')
-            plt.gca().set(xlabel='$x$', ylabel='$y$', title='Prediction')
-            fig.subplots_adjust(right=0.8)
-            cbar_ax = plt.axes([0.85, 0.12, 0.05, 0.76]) # Axes into which the colorbar will be drawn
-            fig.colorbar(cset2, cax=cbar_ax)
-            plt.savefig(f'{dirpath}/forward_2d_contour_iter{i+1}.pdf')
- 
+            ## Plotting 1. u (Exact, Preidction) vs (x,y) and |u_pred-u_test| vs (x,y): contour
+            countourPlot(xtest_mesh, ytest_mesh, u_test, u_pred, N_test, f'forward_2d_contour_iter{i+1}')
     u_preds = np.array(u_preds)
     f_preds = np.array(f_preds)
-
-    # print("loss_values:", loss_values)
-    print('Training time: %.4f' % (time.time() - start_time))
-    # print('final u_pred:', u_pred)
-    # print('final f_pred:', f_pred)
-    # NOTE: what is important is the function u_pred resembles, not so much the parameters (weigths & biases)
+    u_pred, f_pred = model.predict(xtest_grid, ytest_grid)
+    # print('Training time: %.4f' % (time.time() - start_time))
+    # NOTE: what is important is the function u_pred resembles, not so much the parameters (weights & biases)
     # NOTE: if no analytical solution, find numerical method/other method to verify -> directly use network
 
    ###########################
     ## PART 4: calculating errors
-    error_u = np.linalg.norm(u_pred - u_test, 2) / np.linalg.norm(u_test, 2)
-    print('Error u: %e' % (error_u))  # 5.558028e-04
-
-    # print('final f_pred:', f_pred)
+    error_u = np.linalg.norm(u_pred - u_test, 2) / np.linalg.norm(u_test, 2) # scalar
+    print('Error u: %e' % (error_u))
 
     ###########################
     ## PART 5: Plotting
-    # 1. Exact vs Prediction of u (contour) during training
-    # 2. loss vs. iteration + MSE of u_pred and u_test vs. iteration
+
+    # 2. loss vs. iteration, MSE between u_pred and u_test vs. iteration
     fig = plt.figure()
     plt.subplot(2,1,1)
     x_coords = loss_value_step * (np.array(range(len(loss_values))) + 1)
@@ -291,17 +301,16 @@ if __name__ == "__main__":
     plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=7)
     fig.subplots_adjust(right=0.86)
     # NOTE: Oscillation: actually very small nummerical difference because of small y scale
-    # 1. overshoot (fixed -> decaying learning rate)
-    # 2. Adam: gradient descent + momentum (sometime parameter change makes the loss go up)
+        # 1. overshoot (fixed -> decaying learning rate)
+        # 2. Adam: gradient descent + momentum (sometime parameter change makes the loss go up)
     
     plt.subplot(2,1,2)
-    u_mses = [] # 2d array [ [mse1] [mse2] [mse3]]
+    u_mses = [] # 2d array [[mse1] [mse2] [mse3]]
     for u_pred in u_preds:  # (N_test * N_test, 1)
         u_mses.append(((u_pred - u_test)**2).mean(axis=0)) # append [mse for that iteration]
     x_coords = pred_step * (np.array(range(len(u_preds))) + 1)
     u_mses = np.array(u_mses)
     annots = list(zip(x_coords, u_mses.flatten())) # [(1000, 4.748), (2000, 9.394)]
-    print("annot:", annots)
     plt.semilogy(x_coords, u_mses, '.-')
     for annot in annots:
         plt.annotate('(%d, %.3e)' % annot, xy=annot, textcoords='data', fontsize=6)
@@ -310,30 +319,7 @@ if __name__ == "__main__":
     fig.subplots_adjust(hspace=0.4)
     plt.savefig(f'{dirpath}/forward_2d_loss.pdf')
 
-    # 3. plot u vs (x, y) and |u_pred-u_test| vs (x,y): contour
-    fig = plt.figure()
-    gs = gridspec.GridSpec(nrows=2, ncols=3, figure=fig, width_ratios=[6, 6, 1], height_ratios=[1, 1])
-    ax = fig.add_subplot(gs[0, 0])
-    cset1 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_test, (N_test, N_test)), levels=30, cmap='winter')
-    plt.gca().set(xlabel='$x$', ylabel='$y$', title='Exact') # $: mathematical font like latex
-
-    ax = fig.add_subplot(gs[0, 1])
-    cset2 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(u_pred, (N_test, N_test)), levels=30, cmap='winter')
-    plt.gca().set(xlabel='$x$', ylabel='$y$', title='Prediction') # $: mathematical font like latex
-
-    ax = fig.add_subplot(gs[0, 2])
-    fig.colorbar(cset2, cax=ax)
-
-    ax = fig.add_subplot(gs[1, 0:2])
-    cset3 = ax.contourf(xtest_mesh, ytest_mesh, np.reshape(np.abs(u_pred-u_test), (N_test, N_test)), levels=30, cmap='autumn')
-    plt.gca().set(xlabel='$x$', ylabel='$y$', title='|Prediction - Exact|')
-    ax = fig.add_subplot(gs[1, 2])
-    fig.colorbar(cset3, cax=ax)
-
-    fig.subplots_adjust(wspace=0.3, hspace=0.3)
-    plt.savefig(f'{dirpath}/forward_2d_contour.pdf')
-
-    # 4. plot u vs (x, y): surface
+    # 3. plot u vs (x, y): surface
     fig = plt.figure()
     ax = plt.subplot(1, 2, 1, projection='3d')
     ax.plot_surface(xtest_mesh, ytest_mesh, np.reshape(u_test, (N_test, N_test)), label='Exact', cmap='winter')  # Data values as 2D arrays: (N_test * N_test, 1)

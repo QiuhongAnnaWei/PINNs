@@ -1,3 +1,6 @@
 **.DS_Store**
 **__pycache__**
 main/test.py
+
+main/2d/forward_2d_figures/
+main/2d/inverse_2d_figures/

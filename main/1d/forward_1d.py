@@ -3,20 +3,19 @@
 """
 # Forward: given model/pde parameters λ -> u(t, x)
 
-import sys
-sys.path.insert(0, '../../Utilities/') # for plotting
-
+import time, sys, os, json
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io
 from scipy.interpolate import griddata
 from pyDOE import lhs
-import time
 # from plotting import newfig, savefig
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.gridspec as gridspec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+sys.path.insert(0, '../../Utilities/') # for plotting
 
 # np.random.seed(1234)
 # tf.set_random_seed(1234)
@@ -58,9 +57,10 @@ class PhysicsInformedNN:
                     # td.reduce_mean: computes the mean of elements across dimensions of a tensor
 
         # Optimizers:
-        self.train_op_Adam = tf.train.AdamOptimizer().minimize(self.loss) # return a minimization Op (a graph node that performs computation on tensors) -> updates weights and biases
+        # return a minimization Op (a graph node that performs computation on tensors) -> updates weights and biases
+        self.train_op_Adam = tf.train.AdamOptimizer().minimize(self.loss)
 
-        # tf session: initiates a tf Graph(defines computations) in which tensors are processed through operations + allocates resources and holds intermediate values
+        ## tf session: initiates a tf Graph (defines computations) that processes tensors through operations + allocates resources + holds intermediate values
         self.sess = tf.Session()
         init = tf.global_variables_initializer() # variables now hold the values from declarations: tf.Variable(tf.zeros(...)), tf.Variable(tf.random_normal(...)), etc
         self.sess.run(init) # required to initialize the variables
@@ -78,7 +78,7 @@ class PhysicsInformedNN:
         
     def xavier_init(self, size):
         # https://towardsdatascience.com/weight-initialization-in-neural-networks-a-journey-from-the-basics-to-kaiming-954fb9b47c79
-        # Want activation outputs of each layer to have stddev around 1 -> repeat matrix mult across as many network layers as want, without activations exploding or vanishing
+        # Want each layer's activation outputs to have stddev around 1 -> repeat matrix mult across as many layers without activations exploding or vanishing
         in_dim = size[0]
         out_dim = size[1]        
         xavier_stddev = np.sqrt(2/(in_dim + out_dim))
@@ -163,13 +163,15 @@ if __name__ == "__main__":
     # u_f = u[idx,:] # corresponding N_f rows from u (matching sin(x))
     xf = np.reshape(np.linspace(0, np.pi, N_f), (-1, 1)) # [[0] [pi/2] [pi]]
 
+    # testing data
+    N_test = 50
+    xt = np.reshape(np.linspace(0, np.pi, N_test), (-1, 1)) # [[0] [pi/2] [pi]]
+    ut = -1 * np.sin(xt)
+
     ###########################  
     ## PART 3: forming the network, training, predicting
     model = PhysicsInformedNN(x0, u0, xb, u_xb, xf, layers, lb, ub)
              
-    N_test = 50
-    xt = np.reshape(np.linspace(0, np.pi, N_test), (-1, 1)) # [[0] [pi/2] [pi]]
-    ut = -1 * np.sin(xt)
 
     start_time = time.time()
     # Note: loss around 10^-3/-4 should be about good
@@ -196,13 +198,12 @@ if __name__ == "__main__":
     print("loss_values:", loss_values)
     print('Training time: %.4f' % (time.time() - start_time))
     u_pred, f_pred = model.predict(xt)
-    # NOTE: what is important is the function u_pred resembles, not so much the parameters (weigths & biases)
+    # NOTE: what is important is the function u_pred resembles, not so much the parameters (weights & biases)
     # NOTE: if no analytical solution, find numerical method/other method to verify -> directly use network
    
    ###########################  
-    ## PART 4: calculating errors  
-    error_u = np.linalg.norm(u_pred  - ut, 2) / np.linalg.norm( ut, 2)
-    print('Error u: %e' % (error_u))
+    ## PART 4: calculating errors
+    error_u = np.linalg.norm(u_pred  - ut, 2) / np.linalg.norm(ut, 2) # scalar
     
     ###########################  
     ## PART 5: Plotting
@@ -223,7 +224,7 @@ if __name__ == "__main__":
     # 2. Adam: gradient descent + momentum (sometime parameter change makes the loss go up)
     plt.savefig('./figures/forward_1d_loss.pdf')
 
-    # 2. plot u vs x
+    # 2. plot u vs x (exact, prediction)
     print("u_preds.shape", u_preds.shape)
     print("f_preds.shape", f_preds.shape)
     fig = plt.figure()
