@@ -4,16 +4,16 @@
 # Forward: given model/pde parameters λ -> u(t, x)
 
 import time, sys, os, json
-import tensorflow as tf
 import numpy as np
+import tensorflow as tf
 import matplotlib.pyplot as plt
-import scipy.io
-from scipy.interpolate import griddata
-from pyDOE import lhs
-# from plotting import newfig, savefig
-from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.gridspec as gridspec
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+from mpl_toolkits.mplot3d import Axes3D
+# from plotting import newfig, savefig
+# from mpl_toolkits.axes_grid1 import make_axes_locatable
+# import scipy.io
+# from scipy.interpolate import griddata
+# from pyDOE import lhs
 
 sys.path.insert(0, '../../Utilities/') # for plotting
 
@@ -23,14 +23,14 @@ sys.path.insert(0, '../../Utilities/') # for plotting
 
 class PhysicsInformedNN:
     # Initialize the class
-    def __init__(self, x0, u0, xb, u_xb, xf, layers, lb, ub):
+    def __init__(self, x0, u0, xb, u_xb, xf, layers, lowerbound, upperbound):
         self.x0 = x0
         self.u0 = u0
         self.xb = xb
         self.u_xb = u_xb
         self.xf = xf
-        self.lb = lb
-        self.ub = ub
+        self.lowerbound = lowerbound
+        self.upperbound = upperbound
         self.layers = layers
 
         # Initialize NN
@@ -88,16 +88,16 @@ class PhysicsInformedNN:
     
     def neural_net(self, X, weights, biases):
         num_layers = len(weights) + 1 # 6 in this case
-        H = 2.0*(X - self.lb)/(self.ub - self.lb) - 1.0 # Initializing first input: mapping to [-1, 1] 
+        H = 2.0*(X - self.lowerbound)/(self.upperbound - self.lowerbound) - 1.0 # Initializing first input: mapping to [-1, 1] 
         for l in range(0,num_layers-2):
             W = weights[l]
             b = biases[l]
-            H = tf.tanh(tf.add(tf.matmul(H, W), b)) # passing along networks
+            H = tf.tanh(tf.add(tf.matmul(H, W), b)) # passing along networks (tanh range: -1 to 1)
             # NOTE: H*W=(50, 20) + B(1, 20) -> tf does broadcasting: B becomes (50, 20)
         W = weights[-1]
         b = biases[-1]
         Y = tf.add(tf.matmul(H, W), b) # passed 5 times in total
-        return Y
+        return Y # u
     
     def net_all(self, x): # x = (50,1)
         u = self.neural_net(x, self.weights, self.biases) # (50, 1)
@@ -124,17 +124,17 @@ class PhysicsInformedNN:
         return u, f
     
 if __name__ == "__main__": 
-    ## u''(x) = sin(x), x in [0, pi]
+    ## u_xx = sin(x), x in [0, pi]
     ## u(0) = 0
-    ## u'(pi) = 1
+    ## u_x(pi) = 1
     ## analytical solution: u(x) = -sin(x)
 
     ###########################
     ## PART 1: setting parameters and getting accurate data for evaluation 
 
     # Domain bounds
-    lb = np.array([0])
-    ub = np.array([np.pi])
+    lowerbound = np.array([0])
+    upperbound = np.array([np.pi])
     
     layers = [1, 20, 20, 20, 1] # 4-layer deep NN with 20 neurons/layer & hyperbolic tangent act. func.
     
@@ -148,11 +148,10 @@ if __name__ == "__main__":
     ## PART 2：randomly picking/preping the training set from full analytical solution for uniform grid
     # people perfer deterministic way now: want to make sure points cover whole domain/dense everywhere
     # random: better for complex geometrical problem
-    #initial condition
-    x0 = np.array([[0]])
-    u0 = np.array([[0]])
 
     # boundary condition
+    x0 = np.array([[0]])
+    u0 = np.array([[0]])
     xb = np.array([[np.pi]])
     u_xb = np.array([[1]])
 
@@ -170,33 +169,57 @@ if __name__ == "__main__":
 
     ###########################  
     ## PART 3: forming the network, training, predicting
-    model = PhysicsInformedNN(x0, u0, xb, u_xb, xf, layers, lb, ub)
+    model = PhysicsInformedNN(x0, u0, xb, u_xb, xf, layers, lowerbound, upperbound)
              
-
     start_time = time.time()
+
+    # settings for plots 
+    dirpath = f'./main/1d/forward_1d_figures/{start_time}' # where figures are stored
+    os.mkdir(dirpath)
+    ticksize = 8.5
+    plt.rcParams['xtick.labelsize'] = ticksize
+    plt.rcParams['ytick.labelsize'] = ticksize
+    plt.rcParams['axes.labelsize'] = 9.5
+    plt.rcParams['axes.titlesize'] = 10.5
+    plt.rcParams['lines.markersize'] = 4
+    plt.rcParams['legend.handlelength'] = 0.4
+    annotatesize = 9.5
+    dataDict = {
+        'boundary points':{
+            'xb': xb.tolist(),
+            'u_xb': u_xb.tolist(),
+            'x0': x0.tolist(),
+            'u0': u0.tolist(),
+        },
+        'collocation points':{
+            'N_f': N_f,
+            'xf': xf.tolist()
+        },
+        'testing data':{
+            "N_test": N_test,
+            "xt": xt.tolist(),
+            "ut": ut.tolist()
+        }
+    }
+    with open(f'{dirpath}/data.json', 'w') as f:
+        json.dump(dataDict, f)
     # Note: loss around 10^-3/-4 should be about good
-    loss_values = []
-    u_preds = [] # 4 * (50, 1)
-    f_preds = [] # 4 * (50, 1)
+    loss_values, u_preds, f_preds = ([] for i in range(3))
     N_iter = 4000
+    loss_value_step = 10
+    pred_step = 1000
     for i in range(N_iter):
         loss_value = model.train() 
-        if (i+1) % 10 == 0:  # wouldn't plot in beginning, but plot at the end
-            loss_values.append(loss_value)
-            # print('Iter: %d, Loss: %.3e, Time: %.2f' % (i+1, loss_value, time.time() - start_time))
-        if (i+1) % 1000 == 0: # wouldn't plot in beginning, but plot at the end
+        if (i+1) % loss_value_step == 0:  # wouldn't plot in beginning, but plot at the end
+            loss_values.append(float(loss_value))
+            print('Iter: %d, Loss: %.3e, Time: %.2f' % (i+1, loss_value, time.time() - start_time))
+        if (i+1) % pred_step == 0: # wouldn't plot in beginning, but plot at the end
             u_pred, f_pred = model.predict(xt) # f = u_xx - tf.sin(x) # xt: (50, 1)
-            u_preds.append(u_pred)
-            f_preds.append(f_pred)
-            # print('     u_pred: %.3e, f_pred: %.3e' % (u_pred , f_pred)
-            # print('u_pred:', u_pred.shape) # (50, 1)
-            # print('f_pred:', f_pred.shape) # (50, 1)
-            ## analytical solution: u(x) = -sin(x)
+            u_preds.append(u_pred) # (N_test, 1)
+            f_preds.append(f_pred) # (N_test, 1)
+    training_time = time.time() - start_time
     u_preds = np.array(u_preds)
     f_preds = np.array(f_preds)
-
-    print("loss_values:", loss_values)
-    print('Training time: %.4f' % (time.time() - start_time))
     u_pred, f_pred = model.predict(xt)
     # NOTE: what is important is the function u_pred resembles, not so much the parameters (weights & biases)
     # NOTE: if no analytical solution, find numerical method/other method to verify -> directly use network
@@ -204,40 +227,70 @@ if __name__ == "__main__":
    ###########################  
     ## PART 4: calculating errors
     error_u = np.linalg.norm(u_pred  - ut, 2) / np.linalg.norm(ut, 2) # scalar
+    print('Error u: %e' % (error_u))
     
     ###########################  
     ## PART 5: Plotting
-    # 1. plot loss_values (loss vs. iteration) 
-    fig = plt.figure()
-    x_coords = 10*(np.array(range(len(loss_values))) + 1)
+    # Plot 1. loss vs. iteration) 
+    fig = plt.figure(figsize=(5.25, 5.25))
+    plt.ticklabel_format(axis='x', style="sci", scilimits=(2, 2))
+    x_coords = loss_value_step * (np.array(range(len(loss_values))) + 1)
     plt.semilogy(x_coords, loss_values)  # linear X axis, logarithmic y axis(log scaling on the y axis)
-    plt.xlabel("Iteration")
-    plt.ylabel("Loss")
-    plt.title("Loss during Training")
-    init_tuple = (10,loss_values[0])
-    plt.annotate('(%d, %.3e)' % init_tuple, xy=init_tuple, textcoords='data', fontsize=7)
+    plt.gca().set(xlabel='Iteration', ylabel='Loss', title='Loss during Training')
+    init_tuple = (loss_value_step,loss_values[0])
+    plt.annotate('(%d, %.3e)' % init_tuple, xy=init_tuple, fontsize=annotatesize, ha='left')
     last_tuple = (N_iter,loss_values[-1])
-    plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=7)
-    fig.subplots_adjust(right=0.86)
+    plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple, fontsize=annotatesize, ha='right', va='top')
+    plt.plot([init_tuple[0], last_tuple[0]], [init_tuple[1], last_tuple[1]], '.', c='#3B75AF')
+    fig.subplots_adjust(left=0.11, right=0.98, bottom=0.1, top=0.95) 
     # Oscillation: actually very small nummerical difference because of small y scale
     # 1. overshoot (fixed -> decaying learning rate) 
     # 2. Adam: gradient descent + momentum (sometime parameter change makes the loss go up)
-    plt.savefig('./figures/forward_1d_loss.pdf')
+    plt.savefig(f'{dirpath}/forward_1d_loss.pdf')
+    plt.close(fig)
+    with open(f'{dirpath}/forward_1d_loss.json', 'w') as f:
+        json.dump({"x_coords": x_coords.tolist(), "loss_values": loss_values}, f)
 
-    # 2. plot u vs x (exact, prediction)
-    print("u_preds.shape", u_preds.shape)
-    print("f_preds.shape", f_preds.shape)
-    fig = plt.figure()
+    # Plot 2. u vs x (exact, prediction)
+    fig = plt.figure(figsize=(6.8, 5.25))
     for i in range(u_preds.shape[0]): # 4
         ax = plt.subplot(2, 2, i+1)
         exact_plot, = ax.plot(xt, ut, 'b-', label = 'Exact') # tuple unpacking   
-        pred_plot, = ax.plot(xt, u_preds[i], 'r--', label = 'Prediction')    
-        ax.set_xlabel('$x$',fontsize=6) # $: mathematical font like latex
-        ax.set_ylabel('$u$',fontsize=6)
-        plt.xticks(fontsize=6)
-        plt.yticks(fontsize=6)
-        ax.set_title('$Iteration = %d$' % ((i+1)*1000), fontsize = 8)
-    plt.figlegend(handles=(exact_plot, pred_plot),labels=('Exact', 'Prediction'), loc='upper center', ncol=2, fontsize=7) # from last subplot
-    fig.subplots_adjust(wspace=0.35, hspace=0.45)
-    plt.savefig('./figures/forward_1d.pdf')
+        pred_plot, = ax.plot(xt, u_preds[i], 'r--', label = 'Prediction')  
+        plt.gca().set(xlabel='$x$', ylabel='$u$', title=f'Snapshot at Iteration = {(i+1)*pred_step}')  
+    plt.figlegend(handles=(exact_plot, pred_plot),labels=('Exact', 'Prediction'), loc='upper center', ncol=2, fontsize=ticksize) # from last subplot
+    fig.subplots_adjust(wspace=0.26, hspace=0.32, left=0.08, right=0.98, bottom=0.08, top=0.89)
+    plt.savefig(f'{dirpath}/forward_1d_u.pdf')
+    plt.close(fig)
+    with open(f'{dirpath}/forward_1d_u_preds.json', 'w') as f:
+        json.dump(u_preds.tolist(), f)
 
+    ###########################
+    ## PART 6: Saving information
+    infoDict = {
+        'problem':{
+            'pde form': 'u_xx = sin(x)',
+            'boundary (x)': [float(lowerbound[0]),float(upperbound[0])], 
+            'boundary condition (u)': 'u(0) = 0',
+            'boundary condition (u_x)': 'u_x(pi) = 1',
+            'analytical solution': 'u(x) = -sin(x)'
+        },
+        'model':{
+            'layers': str(layers),
+            'training iteration': N_iter,
+            'loss_value_step':loss_value_step,
+            'pred_step': pred_step,
+            'training_time': training_time,
+            'error_u': error_u,
+        },
+        'training data':{
+            'x0': str(x0),
+            'u0': str(u0),
+            'xb': str(xb),
+            'u_xb': str(u_xb),
+            'N_f': N_f,
+            'xf': str(xf)
+        }
+    }
+    with open(f'{dirpath}/info.json', 'w') as f:
+        json.dump(infoDict, f, indent=4)

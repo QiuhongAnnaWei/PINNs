@@ -4,15 +4,17 @@
 # Inverse: given observed data of u(t, x) -> model/pde parameters λ
 
 import time, sys, os, json
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-import matplotlib.gridspec as gridspec
-from mpl_toolkits.mplot3d import Axes3D
-from pyDOE import lhs
-from scipy.interpolate import griddata
-import scipy.io
-import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from mpl_toolkits.mplot3d import Axes3D
+# from plotting import newfig, savefig
+# from mpl_toolkits.axes_grid1 import make_axes_locatable
+# from pyDOE import lhs
+# from scipy.interpolate import griddata
+# import scipy.io
+
 sys.path.insert(0, '../../Utilities/')  # for plotting
 
 # from plotting import newfig, savefig
@@ -49,6 +51,8 @@ class PhysicsInformedNN:
         self.uo_tf = tf.placeholder(tf.float32, shape=[None, self.uo.shape[1]])  # N_train x 1
         self.xf_tf = tf.placeholder(tf.float32, shape=[None, self.xf.shape[1]])  # N_f x 1
 
+        self.lr_tf = tf.placeholder(tf.float32)
+        
         # tf Graphs: u, u_x, f = net_all(x)
         self.u0_pred, _, _ = self.net_all(self.x0_tf)
         _, self.u_xb_pred, _ = self.net_all(self.xb_tf)
@@ -64,7 +68,7 @@ class PhysicsInformedNN:
 
         # Optimizers:
         # return a minimization Op (a graph node that performs computation on tensors) -> updates weights, biases, lambdas
-        self.train_op_Adam = tf.train.AdamOptimizer(learning_rate=0.001).minimize(self.loss)
+        self.train_op_Adam = tf.train.AdamOptimizer(learning_rate=self.lr_tf).minimize(self.loss)
         # NOTE: default: learning_rate=0.001 (typically 0.001 is the max, can make smaller)
         
         # tf session: initiates a tf Graph (defines computations) that processes tensors through operations + allocates resources + holds intermediate values
@@ -116,10 +120,11 @@ class PhysicsInformedNN:
         f = u_xx - lambda_1 * tf.sin(lambda_2 * x)
         return u, u_x, f
 
-    def train(self):  # one iteration: uses all training data from tf_dict and updates weights, biases, lambdas
+    def train(self, lr):  # one iteration: uses all training data from tf_dict and updates weights, biases, lambdas
         tf_dict = {self.x0_tf: self.x0, self.u0_tf: self.u0,
                    self.xb_tf: self.xb, self.u_xb_tf: self.u_xb,
-                   self.xo_tf: self.xo, self.uo_tf: self.uo, self.xf_tf: self.xf}
+                   self.xo_tf: self.xo, self.uo_tf: self.uo, self.xf_tf: self.xf,
+                   self.lr_tf: lr}
         # feeding training examples during training and running the minimization Op of self.loss
         self.sess.run(self.train_op_Adam, tf_dict)
         loss_value, lambda_1, lambda_2 = self.sess.run([self.loss, self.lambda_1, self.lambda_2], tf_dict) # lambda_1/2 do not need tf_dict
@@ -157,13 +162,16 @@ if __name__ == "__main__":
     lowerbound = np.array([0])
     upperbound = np.array([np.pi])
 
+    # true and initial value for lambda
+    lambda_gt = np.array([9, 3])
+    lambda0 = np.array([5, 2])
+
     ###########################
-    ## PART data
-    # initial condition
-    x0 = np.array([[lowerbound[0]]])
-    u0 = np.array([[0]])
+    ## PART 2: setting up data
 
     # boundary condition
+    x0 = np.array([[lowerbound[0]]])
+    u0 = np.array([[0]])
     xb = np.array([[upperbound[0]]])
     u_xb = np.array([[3]])
 
@@ -183,103 +191,161 @@ if __name__ == "__main__":
     xt = np.reshape(np.linspace(lowerbound[0], upperbound[0], N_test), (-1, 1))  # [[0] [pi/2] [pi]]
     ut = -1 * np.sin(3 * xt)
 
-    # initial values for lambdas
-    lambda0 = np.array([5, 2])
-
     ###########################
     ## PART 3: forming the network, training, predicting
     model = PhysicsInformedNN(x0, u0, xb, u_xb, xo, uo, xf, lambda0, layers, lowerbound, upperbound)
 
     start_time = time.time()
-    dirpath = f'./1d/inverse_1d_figures/{start_time}' # where figures are stored
+    # settings for plots 
+    dirpath = f'./main/1d/inverse_1d_figures/{start_time}' # where figures are stored
     os.mkdir(dirpath)
+    ticksize = 8.5
+    plt.rcParams['xtick.labelsize'] = ticksize
+    plt.rcParams['ytick.labelsize'] = ticksize
+    plt.rcParams['axes.labelsize'] = 9.5
+    plt.rcParams['axes.titlesize'] = 10.5
+    plt.rcParams['lines.markersize'] = 4
+    plt.rcParams['legend.handlelength'] = 0.4
+    annotatesize = 9.5
+    dataDict = {
+        'boundary points':{
+            'xb': xb.tolist(),
+            'u_xb': u_xb.tolist(),
+            'x0': x0.tolist(),
+            'u0': u0.tolist(),
+        },
+        'collocation points':{
+            'N_f': N_f,
+            'xf': xf.tolist(),
+        },
+        'observed data':{
+            'N_observed': N_observed,
+            'xo': xo.tolist(),
+            'uo': uo.tolist()
+        },
+        'testing data':{
+            "N_test": N_test,
+            "xt": xt.tolist(),
+            "ut": ut.tolist()
+        }
+    }
+    with open(f'{dirpath}/data.json', 'w') as f:
+        json.dump(dataDict, f)
+
     # Loss: 10^-3/-4 should be about good
     loss_values, u_preds, f_preds = ([] for i in range(3))
-    lambda_1s = [lambda0[0]] # 1d - initial
-    lambda_2s = [lambda0[1]] # 1d - initial
+    lambda_1s = [float(lambda0[0])] # 1d - initial
+    lambda_2s = [float(lambda0[1])] # 1d - initial
     N_iter = 18000
     loss_value_step = 10
     pred_step = 2000
     for i in range(N_iter):
-        loss_value, lambda_1, lambda_2 = model.train() # from last iteration
+        lr = 10**-3 * 2**(-i/30000) if i <= 60000 else 10**-3 * 2**(-60000/30000) #  0.00002210(55000)/0.00001563 # learning rate decay
+        loss_value, lambda_1, lambda_2 = model.train(lr) # from last iteration
         if (i+1) % loss_value_step == 0:  # start with i=9 and end with i=3999 (last iter)
-            loss_values.append(loss_value)
-            lambda_1s.append(lambda_1)
-            lambda_2s.append(lambda_2)
-            print('Iter: %d, Loss: %.3e, Lambda_1: %.5f, lambda_2: %.5f, Time: %.2f' %
-                  (i+1, loss_value, lambda_1, lambda_2, time.time() - start_time))
+            loss_values.append(float(loss_value))
+            lambda_1s.append(float(lambda_1))
+            lambda_2s.append(float(lambda_2))
+            print('Iter: %d, Loss: %.3e, Lambda_1: %.5f, lambda_2: %.5f, Time: %.2f, Learning Rate: %.8f' % (i+1, loss_value, lambda_1, lambda_2, time.time() - start_time, lr))
         if (i+1) % pred_step == 0:  # start with i=999 and end with i=3999 (last iter)
             u_pred, f_pred = model.predict(xt)
             u_preds.append(u_pred) # (N_test, 1)
             f_preds.append(f_pred) # (N_test, 1)
-            # print('     u_pred: %.3e, f_pred: %.3e' % (u_pred , f_pred)
+    training_time = time.time() - start_time
     u_preds = np.array(u_preds)
     f_preds = np.array(f_preds)
     u_pred, f_pred = model.predict(xt)
     print("Initial lambda_1: %.5f, Final lambda_1: %.5f" % (lambda0[0], lambda_1))
     print("Initial lambda_2: %.5f, Final lambda_2: %.5f" % (lambda0[1], lambda_2))
-    # print('Training time: %.4f' % (time.time() - start_time))
     # NOTE: what is important is the function u_pred resembles, not so much the parameters (weights & biases)
     # NOTE: if no analytical solution, find numerical method/other method to verify -> directly use network
     
     ###########################
     ## PART 4: calculating errors
     error_u = np.linalg.norm(u_pred - ut, 2) / np.linalg.norm(ut, 2) # scalar
-    error_lambda_1 = np.abs(lambda_1 - 9)/9 * 100  # Ground truth: lambda_1=9 # 1d np array
-    error_lambda_2 = np.abs(lambda_2 - 3)/3 * 100  # Ground truth: lambda_2=3 # 1d np array
+    error_lambda_1 = np.abs(lambda_1 - lambda_gt[0])/lambda_gt[0] * 100  # Ground truth: lambda_1=9 # 1d np array
+    error_lambda_2 = np.abs(lambda_2 - lambda_gt[1])/lambda_gt[1] * 100  # Ground truth: lambda_2=3 # 1d np array
     print('Error u: %e | Error lambda_1: %.5f%% | Error lambda_2: %.5f%%' % (error_u, error_lambda_1, error_lambda_2))
     
     ###########################
     ## PART 5: Plotting
 
-    # 1. loss vs. iteration, lambda_1 vs iteration, lambda_2 vs iteration
-    fig = plt.figure(figsize=(8, 4.8))
-    gs = gridspec.GridSpec(ncols=2, nrows=2, figure=fig)
-    fig.add_subplot(gs[0, :])
+    # Plot 1. loss vs. iteration,, lambda_2 vs iteration
+    fig = plt.figure(figsize=(5, 6))
+    plt.ticklabel_format(axis='x', style="sci", scilimits=(2,2))
     x_coords = loss_value_step * (np.array(range(len(loss_values))) + 1)
     plt.semilogy(x_coords, loss_values) # linear X axis, logarithmic y axis(log scaling on the y axis)
-    plt.gca().set(xlabel="Iteration", ylabel="Loss", title="Loss during Training")
+    plt.gca().set(xlabel='Iteration', ylabel='Loss', title='Loss during Training')
     init_tuple = (loss_value_step, loss_values[0])
-    plt.annotate('(%d, %.3e)' % init_tuple, xy=init_tuple, textcoords='data', fontsize=6)
+    plt.annotate('(%d, %.3e)' % init_tuple, xy=init_tuple, fontsize=annotatesize, ha='left')
     last_tuple = (N_iter, loss_values[-1])
-    plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=6)
+    plt.annotate('(%d, %.3e)' % last_tuple, xy=last_tuple, fontsize=annotatesize, ha='right', va='top')
+    plt.plot([init_tuple[0], last_tuple[0]], [init_tuple[1], last_tuple[1]], '.', c='#3B75AF')
+    fig.subplots_adjust(left=0.13, right=0.98, bottom=0.07, top=0.95) 
+    # NOTE: Oscillation: actually very small nummerical difference because of small y scale
+        # 1. overshoot (fixed -> decaying learning rate)
+        # 2. Adam: gradient descent + momentum (sometime parameter change makes the loss go up)
+    plt.savefig(f'{dirpath}/inverse_1d_loss.pdf')
+    plt.close(fig)
+    with open(f'{dirpath}/inverse_1d_loss.json', 'w') as f:
+        json.dump({"x_coords": x_coords.tolist(), "loss_values": loss_values}, f)
     
+    # Plot 2. lambda_1 vs iteration
+    fig = plt.figure(figsize=(4.3, 6))
+    plt.ticklabel_format(axis='x', style="sci", scilimits=(2,2))
     x_coords = loss_value_step * (np.array(range(len(lambda_1s)))) # has an additional entry than loss_values: initial
-    fig.add_subplot(gs[1, 0])
     plt.plot(x_coords, lambda_1s)
     plt.gca().set(xlabel="Iteration", ylabel="Lambda_1", title="Lambda_1 during Training")
     init_tuple = (0, lambda_1s[0])
-    plt.annotate('(%d, %.3f)' % init_tuple, xy=init_tuple,textcoords='data', fontsize=6)
+    plt.annotate('(%d, %.5f)' % init_tuple, xy=init_tuple, fontsize=annotatesize, ha='left')
     last_tuple = (N_iter, lambda_1s[-1])
-    plt.annotate('(%d, %.3f)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=6)
+    plt.annotate('(%d, %.5f)' % last_tuple, xy=last_tuple, fontsize=annotatesize, ha='right')
+    plt.plot([init_tuple[0], last_tuple[0]], [init_tuple[1], last_tuple[1]], '.', c='#3B75AF')
+    fig.subplots_adjust(left=0.13, right=0.98, bottom=0.07, top=0.95)
+    plt.savefig(f'{dirpath}/inverse_1d_lambda_1.pdf')
+    plt.close(fig)
+    with open(f'{dirpath}/inverse_1d_lambda_1.json', 'w') as f:
+        json.dump({"x_coords": x_coords.tolist(), "lambda_1s": lambda_1s}, f)
     
-    fig.add_subplot(gs[1, 1])
+    # Plot 3. lambda_2 vs iteration
+    fig = plt.figure(figsize=(4.3, 6))
+    plt.ticklabel_format(axis='x', style="sci", scilimits=(2,2))
+    x_coords = loss_value_step * (np.array(range(len(lambda_2s)))) # has an additional entry than loss_values: initial
     plt.plot(x_coords, lambda_2s)
     plt.gca().set(xlabel="Iteration", ylabel="Lambda_2", title="Lambda_2 during Training")
     init_tuple = (0, lambda_2s[0])
-    plt.annotate('(%d, %.3f)' % init_tuple, xy=init_tuple,textcoords='data', fontsize=6)
+    plt.annotate('(%d, %.5f)' % init_tuple, xy=init_tuple, fontsize=annotatesize, ha='left')
     last_tuple = (N_iter, lambda_2s[-1])
-    plt.annotate('(%d, %.3f)' % last_tuple, xy=last_tuple, textcoords='data', fontsize=6)
+    plt.annotate('(%d, %.5f)' % last_tuple, xy=last_tuple, fontsize=annotatesize, ha='right')
+    plt.plot([init_tuple[0], last_tuple[0]], [init_tuple[1], last_tuple[1]], '.', c='#3B75AF')
+    fig.subplots_adjust(left=0.13, right=0.98, bottom=0.07, top=0.95)
+    plt.savefig(f'{dirpath}/inverse_1d_lambda_2.pdf')
+    plt.close(fig)
+    with open(f'{dirpath}/inverse_1d_lambda_2.json', 'w') as f:
+        json.dump({"x_coords": x_coords.tolist(), "lambda_2s": lambda_2s}, f)
     
-    fig.subplots_adjust(wspace=0.3, hspace=0.35)
-    plt.savefig(f'{dirpath}/inverse_1d_loss.pdf')
-
-    # 2. plot u vs x (exact, prediction)
+    # Plot 4. u vs x (exact, prediction)
     plt.rcParams['axes.labelpad'] = -1 # default = 4
-    fig = plt.figure()
+    fig = plt.figure(figsize=(11, 6))
     for i in range(u_preds.shape[0]):
         ax = plt.subplot(3, 3, i+1)
         exact_plot, = ax.plot(xt, ut, 'b-', label='Exact')  # tuple unpacking
         pred_plot, = ax.plot(xt, u_preds[i], 'r--', label='Prediction')
-        plt.gca().set(xlabel="$x$", ylabel="$u$", title='$Iteration = %d$' % ((i+1)*pred_step))
-    plt.figlegend(handles=(exact_plot, pred_plot), labels=('Exact', 'Prediction'), loc='upper center', ncol=2, fontsize=7)  # from last subplot
-    fig.subplots_adjust(wspace=0.3, hspace=0.51)
-    plt.savefig(f'{dirpath}/inverse_1d.pdf')
+        plt.gca().set(xlabel="$x$", ylabel="$u$", title=f'Snapshot at Iteration = {(i+1)*pred_step}')
+    plt.figlegend(handles=(exact_plot, pred_plot), labels=('Exact', 'Prediction'), loc='upper center', ncol=2, fontsize=ticksize)  # from last subplot
+    fig.subplots_adjust(wspace=0.2, hspace=0.48, left=0.05, right=0.98, bottom=0.06, top=0.89)
+    plt.savefig(f'{dirpath}/inverse_1d_u.pdf')
+    plt.close(fig)
+    with open(f'{dirpath}/inverse_1d_u_preds.json', 'w') as f:
+        json.dump(u_preds.tolist(), f)
 
+    ###########################
+    ## PART 6: Saving information
     infoDict = {
         'problem':{
-            'pde form': 'u''(x) = lambda_1 * sin(lambda_2 * x)',
-            'pde value': 'u''(x) = 9 * sin(3 * x)',
+            'pde form': 'u_xx = lambda_1 * sin(lambda_2 * x)',
+            'lambda_1 gt': float(lambda_gt[0]),
+            'lambda_2 gt': float(lambda_gt[0]),
             'boundary (x)': [float(lowerbound[0]),float(upperbound[0])], 
             'initial condition': 'u(0) = 0',
             'boundary condition': "u'(pi) = 3",
@@ -288,6 +354,9 @@ if __name__ == "__main__":
         'model':{
             'layers': str(layers),
             'training iteration': N_iter,
+            'loss_value_step':loss_value_step,
+            'pred_step': pred_step,
+            'training_time': training_time,
             'initial lambda_1': float(lambda0[0]),
             'final lambda_1': float(lambda_1[0]),
             'error_lambda_1 percentage': float(error_lambda_1[0]),
