@@ -1,6 +1,3 @@
-"""
-@author: Maziar Raissi
-"""
 # Inverse: given observed data of u(t, x) -> model/pde parameters λ
 
 import time, sys, os, json

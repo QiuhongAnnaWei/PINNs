@@ -1,6 +1,3 @@
-"""
-@author: Maziar Raissi
-"""
 # Forward: given model/pde parameters λ -> u(t, x)
 
 import time, sys, os, json

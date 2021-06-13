@@ -1,6 +1,3 @@
-"""
-@author: Maziar Raissi
-"""
 # Inverse: given observed data of u(t, x) -> model/pde parameters λ
 
 import time, sys, os, json
@@ -219,7 +216,7 @@ if __name__ == "__main__":
     ###########################
     ## PART 1: setting parameters and getting accurate data for evaluation
 
-    # 4-layer deep NN with 50 neurons/layer & hyperbolic tangent act. func.
+    # 4-layer deep NN with hyperbolic tangent activation function
     layers = [2, 30, 30, 30, 1]
 
     # Domain bounds
@@ -330,7 +327,7 @@ if __name__ == "__main__":
     with open(f'{dirpath}/data.json', 'w') as f:
         json.dump(dataDict, f)
 
-    # Note: loss around 10^-3/-4 should be about good
+    # NOTE: loss around 10^-3/-4 should be about good
     loss_values, u_preds, f_preds = ([] for i in range(3))
     lambda_1s = [float(lambda0[0])] # 1d [lambda1, lambda1, lambda1]
     N_iter = 120000
